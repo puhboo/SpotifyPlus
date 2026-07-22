@@ -2173,6 +2173,17 @@ public class ThemeHook extends SpotifyHook {
                 activity.getTheme().rebase();
             }
 
+            if (BeautifulLyricsHook.isOverlayShowing(activity)) {
+                View content = activity.findViewById(android.R.id.content);
+                if (content != null) {
+                    content.requestLayout();
+                    content.invalidate();
+                }
+                activity.getWindow().getDecorView().invalidate();
+                XposedBridge.log(TAG + "Rebased " + activity.getClass().getName() + " in place while lyrics are open for palette generation " + paletteGeneration);
+                return;
+            }
+
             XposedBridge.log(
                     TAG + "Recreating " + activity.getClass().getName()
                             + " for palette generation " + paletteGeneration

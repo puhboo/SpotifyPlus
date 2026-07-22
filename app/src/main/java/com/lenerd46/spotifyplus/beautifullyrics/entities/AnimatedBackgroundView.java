@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class AnimatedBackgroundView extends View {
     private static final int BLUR_RADIUS = 20;
     private static final long TRANSITION_DURATION_MS = 1000L;
+    private static final long TARGET_FRAME_INTERVAL_NANOS = 33_333_333L;
     private static final int BUFFER_COUNT = 3;
 
     private static final int PALETTE_COLORFUL = 0;
@@ -48,8 +49,10 @@ public class AnimatedBackgroundView extends View {
 
     private List<Blob> blobs = new ArrayList<>();
     private final Paint blobPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+    private final Paint artworkPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint drawPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Matrix shaderMatrix = new Matrix();
+    private final Rect artworkBounds = new Rect();
     private final Rect drawBounds = new Rect();
 
     private long startTimeMs;
@@ -57,6 +60,7 @@ public class AnimatedBackgroundView extends View {
     private Bitmap previousBitmap;
     private long transitionStartMs;
     private long lastRenderTimeNanos = 0;
+    private long lastScheduledFrameNanos = 0;
 
     private float animationSpeedMultiplier = 1.0f;
     private float breathingFrequency = 1.0f;
@@ -106,7 +110,8 @@ public class AnimatedBackgroundView extends View {
             @Override
             public void doFrame(long frameTimeNanos) {
                 if (getWindowToken() == null) return;
-                if (renderScheduled.compareAndSet(false, true)) {
+                if (frameTimeNanos - lastScheduledFrameNanos >= TARGET_FRAME_INTERVAL_NANOS && renderScheduled.compareAndSet(false, true)) {
+                    lastScheduledFrameNanos = frameTimeNanos;
                     renderHandler.post(AnimatedBackgroundView.this::renderFrame);
                 }
                 Choreographer.getInstance().postFrameCallback(this);
@@ -204,6 +209,7 @@ public class AnimatedBackgroundView extends View {
             }
             offW = targetW;
             offH = targetH;
+            artworkBounds.set(0, 0, offW, offH);
             blurBufA = new int[offW * offH];
             blurBufB = new int[offW * offH];
             blurOutgoingX = new int[offW];
@@ -229,12 +235,19 @@ public class AnimatedBackgroundView extends View {
         float[] hsv = new float[3];
         double sumS = 0.0;
         double sumV = 0.0;
+        long sampledRed = 0;
+        long sampledGreen = 0;
+        long sampledBlue = 0;
         int sampleCount = 0;
         for (int x = 0; x < sourceImage.getWidth(); x += 4) {
             for (int y = 0; y < sourceImage.getHeight(); y += 4) {
-                Color.colorToHSV(sourceImage.getPixel(x, y), hsv);
+                int color = sourceImage.getPixel(x, y);
+                Color.colorToHSV(color, hsv);
                 sumS += hsv[1];
                 sumV += hsv[2];
+                sampledRed += Color.red(color);
+                sampledGreen += Color.green(color);
+                sampledBlue += Color.blue(color);
                 sampleCount++;
             }
         }
@@ -263,7 +276,8 @@ public class AnimatedBackgroundView extends View {
             breathingFrequency = bpm / 110.0f;
         }
 
-        HueBucket[] hueBuckets = new HueBucket[36];
+        HueBucket[] hueBuckets = new HueBucket[432];
+        int colorSampleCount = 0;
         for (int x = 0; x < sourceImage.getWidth(); x++) {
             for (int y = 0; y < sourceImage.getHeight(); y++) {
                 int color = sourceImage.getPixel(x, y);
@@ -275,18 +289,21 @@ public class AnimatedBackgroundView extends View {
                 float value = hsv[2];
                 if (value < 0.03f) continue;
                 if (paletteMode == PALETTE_COLORFUL) {
-                    if (saturation < 0.18f || value < 0.18f) continue;
+                    if (saturation < 0.08f || value < 0.12f) continue;
                 } else if (paletteMode == PALETTE_DARK_MUTED) {
                     if (value < 0.05f && saturation < 0.05f) continue;
                 } else if (value < 0.50f && saturation < 0.08f) {
                     continue;
                 }
 
-                int bin = clamp((int) (hue / 10f), 0, 35);
+                int hueBin = clamp((int) (hue / 10f), 0, 35);
+                int saturationBin = clamp((int) (saturation * 3f), 0, 2);
+                int valueBin = clamp((int) (value * 4f), 0, 3);
+                int bin = hueBin * 12 + saturationBin * 4 + valueBin;
                 HueBucket bucket = hueBuckets[bin];
                 if (bucket == null) {
                     bucket = new HueBucket();
-                    bucket.hueCenter = bin * 10f + 5f;
+                    bucket.hueCenter = hueBin * 10f + 5f;
                     hueBuckets[bin] = bucket;
                 }
                 bucket.sumR += Color.red(color);
@@ -294,101 +311,82 @@ public class AnimatedBackgroundView extends View {
                 bucket.sumB += Color.blue(color);
                 bucket.sumS += saturation;
                 bucket.sumV += value;
+                bucket.sumX += x;
+                bucket.sumY += y;
                 bucket.count++;
+                colorSampleCount++;
             }
         }
 
         List<HueBucket> rankedBuckets = new ArrayList<>();
+        int minimumBucketCount = Math.max(6, Math.round(colorSampleCount * 0.01f));
         for (HueBucket bucket : hueBuckets) {
-            if (bucket == null || bucket.count == 0) continue;
+            if (bucket == null || bucket.count < minimumBucketCount) continue;
             float vividness = (bucket.sumS / bucket.count) * 0.7f
                     + (bucket.sumV / bucket.count) * 0.3f;
             if (paletteMode == PALETTE_COLORFUL) {
-                bucket.score = bucket.count * vividness;
+                bucket.score = (float) Math.pow(bucket.count, 0.72) * (0.55f + vividness);
             } else if (paletteMode == PALETTE_DARK_MUTED) {
-                bucket.score = bucket.count * (0.7f + vividness * 0.3f);
+                bucket.score = (float) Math.pow(bucket.count, 0.72) * (0.75f + vividness * 0.4f);
             } else {
-                bucket.score = bucket.count * (1.0f + vividness * 0.2f);
+                bucket.score = (float) Math.pow(bucket.count, 0.72) * (0.90f + vividness * 0.3f);
             }
             rankedBuckets.add(bucket);
         }
 
-        List<Integer> blobColors = new ArrayList<>(blobCount);
+        List<HueBucket> blobBuckets = new ArrayList<>(blobCount);
         if (rankedBuckets.isEmpty()) {
+            HueBucket fallback = new HueBucket();
             int color = sourceImage.getPixel(sourceImage.getWidth() / 2, sourceImage.getHeight() / 2);
-            for (int i = 0; i < blobCount; i++) blobColors.add(color);
+            fallback.sumR = Color.red(color);
+            fallback.sumG = Color.green(color);
+            fallback.sumB = Color.blue(color);
+            fallback.sumX = sourceImage.getWidth() * 0.5f;
+            fallback.sumY = sourceImage.getHeight() * 0.5f;
+            fallback.count = 1;
+            for (int i = 0; i < blobCount; i++) blobBuckets.add(fallback);
         } else {
             Collections.sort(rankedBuckets, (left, right) -> Float.compare(right.score, left.score));
-            List<HueBucket> mainBuckets = new ArrayList<>(3);
+            int paletteSize = Math.min(Math.max(2, blobCount / 2), Math.min(8, rankedBuckets.size()));
+            List<HueBucket> mainBuckets = new ArrayList<>(paletteSize);
             mainBuckets.add(rankedBuckets.get(0));
-            for (int i = 1; i < rankedBuckets.size() && mainBuckets.size() < 3; i++) {
+            for (int i = 1; i < rankedBuckets.size() && mainBuckets.size() < paletteSize; i++) {
                 HueBucket candidate = rankedBuckets.get(i);
                 boolean farEnough = true;
                 for (HueBucket main : mainBuckets) {
-                    float distance = Math.abs(candidate.hueCenter - main.hueCenter);
-                    if (distance > 180f) distance = 360f - distance;
-                    if (distance < 22f) {
+                    float hueDistance = Math.abs(candidate.hueCenter - main.hueCenter);
+                    if (hueDistance > 180f) hueDistance = 360f - hueDistance;
+                    float candidateSaturation = candidate.sumS / candidate.count;
+                    float mainSaturation = main.sumS / main.count;
+                    float distance = hueDistance / 180f * (0.25f + Math.max(candidateSaturation, mainSaturation) * 0.75f) + Math.abs(candidateSaturation - mainSaturation) * 0.35f + Math.abs(candidate.sumV / candidate.count - main.sumV / main.count) * 0.45f;
+                    if (distance < 0.16f) {
                         farEnough = false;
                         break;
                     }
                 }
                 if (farEnough) mainBuckets.add(candidate);
             }
-
-            int mainCount = mainBuckets.size();
-            if (mainCount == 1) {
-                int color = bucketToColor(mainBuckets.get(0));
-                for (int i = 0; i < blobCount; i++) blobColors.add(color);
-            } else {
-                float[] weights;
-                if (mainCount == 2) {
-                    if (paletteMode == PALETTE_DARK_MUTED) {
-                        weights = new float[]{0.70f, 0.30f};
-                    } else if (paletteMode == PALETTE_BRIGHT_NEUTRAL) {
-                        weights = new float[]{0.75f, 0.25f};
-                    } else {
-                        weights = new float[]{0.65f, 0.35f};
+            for (int i = 1; i < rankedBuckets.size() && mainBuckets.size() < paletteSize; i++) if (!mainBuckets.contains(rankedBuckets.get(i))) mainBuckets.add(rankedBuckets.get(i));
+            blobBuckets.addAll(mainBuckets);
+            float totalWeight = 0f;
+            for (HueBucket bucket : mainBuckets) totalWeight += (float) Math.sqrt(bucket.count);
+            while (blobBuckets.size() < blobCount) {
+                float choice = random.nextFloat() * totalWeight;
+                for (HueBucket bucket : mainBuckets) {
+                    choice -= (float) Math.sqrt(bucket.count);
+                    if (choice <= 0f) {
+                        blobBuckets.add(bucket);
+                        break;
                     }
-                } else if (paletteMode == PALETTE_DARK_MUTED) {
-                    weights = new float[]{0.60f, 0.25f, 0.15f};
-                } else if (paletteMode == PALETTE_BRIGHT_NEUTRAL) {
-                    weights = new float[]{0.70f, 0.18f, 0.12f};
-                } else {
-                    weights = new float[]{0.55f, 0.25f, 0.20f};
                 }
-
-                int[] counts = new int[mainCount];
-                int primaryMinimum = Math.max(blobCount / 3, 4);
-                int assigned = 0;
-                for (int i = 0; i < mainCount; i++) {
-                    int minimum = i == 0 ? primaryMinimum : 2;
-                    counts[i] = clamp(Math.round(weights[i] * blobCount), minimum, blobCount);
-                    assigned += counts[i];
-                }
-                if (assigned > blobCount) {
-                    int excess = assigned - blobCount;
-                    for (int i = mainCount - 1; i >= 0 && excess > 0; i--) {
-                        int minimum = i == 0 ? primaryMinimum : 2;
-                        int delta = Math.min(counts[i] - minimum, excess);
-                        counts[i] -= delta;
-                        excess -= delta;
-                    }
-                    assigned = blobCount;
-                }
-                if (assigned < blobCount) counts[0] += blobCount - assigned;
-
-                for (int i = 0; i < mainCount; i++) {
-                    int color = bucketToColor(mainBuckets.get(i));
-                    for (int j = 0; j < counts[i]; j++) blobColors.add(color);
-                }
-                Collections.shuffle(blobColors, random);
             }
+            Collections.shuffle(blobBuckets, random);
         }
 
-        int seedColor = blobColors.get(0);
-        Color.colorToHSV(seedColor, hsv);
+        int averageColor = sampleCount == 0 ? sourceImage.getPixel(sourceImage.getWidth() / 2, sourceImage.getHeight() / 2) : Color.rgb((int) (sampledRed / sampleCount), (int) (sampledGreen / sampleCount), (int) (sampledBlue / sampleCount));
+        Color.colorToHSV(averageColor, hsv);
         if (paletteMode == PALETTE_COLORFUL) {
-            hsv[1] *= 0.35f;
+            hsv[1] = clampFloat(hsv[1] * 0.65f, 0.18f, 0.55f);
             hsv[2] = clampFloat(0.13f + hsv[2] * 0.19f, 0.13f, 0.32f);
         } else if (paletteMode == PALETTE_DARK_MUTED) {
             hsv[1] *= 0.30f;
@@ -408,11 +406,12 @@ public class AnimatedBackgroundView extends View {
 
         List<Blob> newBlobs = new ArrayList<>(blobCount);
         for (int i = 0; i < blobCount; i++) {
-            int rawColor = blobColors.get(i);
+            HueBucket bucket = blobBuckets.get(i);
+            int rawColor = bucketToColor(bucket);
             Color.colorToHSV(rawColor, hsv);
             if (paletteMode == PALETTE_COLORFUL) {
-                hsv[1] = clampFloat(hsv[1] * 1.10f, 0.45f, 0.90f);
-                hsv[2] = clampFloat(0.50f + hsv[2] * 0.30f, 0.55f, 0.80f);
+                hsv[1] = clampFloat(hsv[1] * 1.18f, 0.55f, 0.98f);
+                hsv[2] = clampFloat(0.50f + hsv[2] * 0.34f, 0.55f, 0.84f);
             } else if (paletteMode == PALETTE_DARK_MUTED) {
                 hsv[1] = clampFloat(hsv[1] * 0.9f, 0.08f, 0.45f);
                 hsv[2] = clampFloat(0.18f + hsv[2] * 0.24f, 0.12f, 0.46f);
@@ -434,8 +433,8 @@ public class AnimatedBackgroundView extends View {
             }
             int processedColor = Color.HSVToColor(hsv);
 
-            float originX = 0.5f + (random.nextFloat() - 0.5f) * 0.8f;
-            float originY = 0.5f + (random.nextFloat() - 0.5f) * 0.8f;
+            float originX = clampFloat(bucket.sumX / bucket.count / Math.max(1, sourceImage.getWidth() - 1) + (random.nextFloat() - 0.5f) * 0.30f, -0.1f, 1.1f);
+            float originY = clampFloat(bucket.sumY / bucket.count / Math.max(1, sourceImage.getHeight() - 1) + (random.nextFloat() - 0.5f) * 0.30f, -0.1f, 1.1f);
             float radius = 0.35f + random.nextFloat() * 0.4f;
             float vx = (random.nextFloat() - 0.5f) * 0.003f;
             float vy = (random.nextFloat() - 0.5f) * 0.003f;
@@ -447,7 +446,7 @@ public class AnimatedBackgroundView extends View {
 
     private static class HueBucket {
         long sumR, sumG, sumB;
-        float sumS, sumV;
+        float sumS, sumV, sumX, sumY;
         int count;
         float hueCenter;
         float score;
@@ -470,6 +469,11 @@ public class AnimatedBackgroundView extends View {
             if (buffer == null) return;
 
             c.drawColor(baseColor);
+            if (sourceImage != null && !sourceImage.isRecycled()) {
+                artworkPaint.setAlpha(paletteMode == PALETTE_BRIGHT_NEUTRAL ? 90 : 120);
+                c.drawBitmap(sourceImage, null, artworkBounds, artworkPaint);
+                c.drawColor((baseColor & 0x00FFFFFF) | 0x68000000);
+            }
 
             long nowNanos = System.nanoTime();
             long dtNanos = lastRenderTimeNanos == 0 ? 16_666_667L : nowNanos - lastRenderTimeNanos;

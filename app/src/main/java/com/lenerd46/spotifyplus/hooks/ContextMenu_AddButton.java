@@ -35,10 +35,6 @@ public class ContextMenu_AddButton extends SpotifyHook {
             XposedHelpers.findAndHookConstructor("com.spotify.bottomsheet.core.ScrollableContentWithHeaderLayout", lpparm.classLoader, Context.class, AttributeSet.class, new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            SharedPreferences ref = References.getPreferences();
-                            String username = ref.getString("last_fm_username", "null");
-                            if (username.equals("null")) return;
-
                             final ViewGroup sheet = (ViewGroup) param.thisObject;
                             sheet.post(() -> {
                                 View rv = findContextMenuRecycler(sheet);
@@ -104,7 +100,7 @@ public class ContextMenu_AddButton extends SpotifyHook {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 int orig = (int) param.getResult();
-                param.setResult(orig + 1);
+                param.setResult(orig + getCustomRowCount());
             }
         });
 
@@ -112,10 +108,11 @@ public class ContextMenu_AddButton extends SpotifyHook {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 int pos = (int) param.args[0];
-                if (pos == 0) {
+                int customRows = getCustomRowCount();
+                if (pos < customRows) {
                     param.setResult(1);
                 } else {
-                    param.args[0] = pos - 1;
+                    param.args[0] = pos - customRows;
                 }
             }
         });
@@ -125,11 +122,26 @@ public class ContextMenu_AddButton extends SpotifyHook {
             protected void beforeHookedMethod(MethodHookParam param) {
                 Object holder = param.args[0];
                 int pos = (int) param.args[1];
+                int customRows = getCustomRowCount();
 
                 if (pos == 0) {
                     View item = (View) XposedHelpers.getObjectField(holder, "itemView");
                     if (item != null) {
-                        ensureRow(item);
+                        ensureRow(item, true);
+
+                        item.setContentDescription("Lyrics");
+                        item.setOnClickListener(v -> {
+                            Activity activity = References.currentActivity;
+                            if (activity == null) return;
+                            activity.onBackPressed();
+                            activity.getWindow().getDecorView().post(() -> BeautifulLyricsHook.showOverlay(activity, false));
+                        });
+                    }
+                    param.setResult(null);
+                } else if (hasLastFm() && pos == 1) {
+                    View item = (View) XposedHelpers.getObjectField(holder, "itemView");
+                    if (item != null) {
+                        ensureRow(item, false);
 
                         item.setContentDescription("Open in Last.fm");
                         item.setOnClickListener(v -> {
@@ -143,7 +155,7 @@ public class ContextMenu_AddButton extends SpotifyHook {
                     }
                     param.setResult(null);
                 } else {
-                    param.args[1] = pos - 1;
+                    param.args[1] = pos - customRows;
                 }
             }
         });
@@ -151,7 +163,16 @@ public class ContextMenu_AddButton extends SpotifyHook {
 
     private static final int TAG_SPOTIFYPLUS_ROW = 0x53474C60;
 
-    private void ensureRow(View item) {
+    private int getCustomRowCount() {
+        return hasLastFm() ? 2 : 1;
+    }
+
+    private boolean hasLastFm() {
+        SharedPreferences preferences = References.getPreferences();
+        return preferences != null && !"null".equals(preferences.getString("last_fm_username", "null"));
+    }
+
+    private void ensureRow(View item, boolean lyrics) {
         if (!(item instanceof ViewGroup)) return;
         ViewGroup root = (ViewGroup) item;
 
@@ -200,13 +221,13 @@ public class ContextMenu_AddButton extends SpotifyHook {
             root.setTag(TAG_SPOTIFYPLUS_ROW, rowLayout);
         }
 
-        Drawable d = References.modResources.getDrawable(R.drawable.lastfm);
+        Drawable d = References.modResources.getDrawable(lyrics ? R.drawable.music_note : R.drawable.lastfm);
         iconView.setImageDrawable(d);
         iconView.setImageTintList(null);
         iconView.setColorFilter(null);
 
         // Spotify is very inconsistent with how they name their buttons in this list, so I'm not really sure what to capitalize?
-        textView.setText("Open in Last.fm");
+        textView.setText(lyrics ? "Lyrics" : "Open in Last.fm");
     }
 
 

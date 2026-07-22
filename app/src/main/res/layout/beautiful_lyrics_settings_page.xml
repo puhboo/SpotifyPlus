@@ -682,47 +682,6 @@
                                         android:contentDescription="Send Access Token" />
                         </LinearLayout>
 
-                        <!--            <LinearLayout-->
-                        <!--                    android:layout_width="match_parent"-->
-                        <!--                    android:layout_height="56dp"-->
-                        <!--                    android:orientation="horizontal"-->
-                        <!--                    android:gravity="center_vertical"-->
-                        <!--                    android:layout_marginBottom="16dp"-->
-                        <!--                    android:clickable="true" android:focusable="true"-->
-                        <!--                    android:background="@drawable/row_click_bg">-->
-
-                        <!--                <LinearLayout-->
-                        <!--                        android:layout_width="0dp"-->
-                        <!--                        android:layout_height="wrap_content"-->
-                        <!--                        android:layout_weight="1"-->
-                        <!--                        android:orientation="vertical">-->
-
-                        <!--                    <TextView-->
-                        <!--                            android:layout_width="wrap_content"-->
-                        <!--                            android:layout_height="wrap_content"-->
-                        <!--                            android:text="Check For User Lyrics"-->
-                        <!--                            android:textColor="@color/white"-->
-                        <!--                            android:textSize="15sp"-->
-                        <!--                            android:paddingBottom="4dp" />-->
-
-                        <!--                    <TextView-->
-                        <!--                            style="@style/TextAppearance.Material3.BodySmall"-->
-                        <!--                            android:layout_width="wrap_content"-->
-                        <!--                            android:layout_height="wrap_content"-->
-                        <!--                            android:text="Checks for any syllable synced lyrics that users synced.
-                        These lyrics may be inaccureate and it might take longer for line synced
-                        lyrics to load"-->
-                        <!--                            android:textColor="?attr/colorOnSurfaceVariant"/>-->
-                        <!--                </LinearLayout>-->
-
-                        <!--                <com.google.android.material.materialswitch.MaterialSwitch-->
-                        <!--                        android:id="@+id/switch_check_user_lyrics"-->
-                        <!--                        android:layout_width="wrap_content"-->
-                        <!--                        android:layout_height="wrap_content"-->
-                        <!--                        android:paddingHorizontal="8dp"-->
-                        <!--                        android:checked="true"-->
-                        <!--                        android:contentDescription="Check For User Lyrics"/>-->
-                        <!--            </LinearLayout>-->
                 </LinearLayout>
         </androidx.core.widget.NestedScrollView>
 
