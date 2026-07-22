@@ -1011,11 +1011,13 @@ public class RemoveCreateButtonHook extends SpotifyHook {
                                     superLow.setChecked(true);
                                 });
 
-                                MaterialSwitch sendToken = view.findViewById(R.id.switch_send_token);
+                                MaterialSwitch swapTranslations = view.findViewById(R.id.switch_swap_translations);
+                                MaterialSwitch hideOriginal = view.findViewById(R.id.switch_hide_original);
 
                                 background.setOnCheckedChangeListener((button, value) -> prefs.edit().putBoolean("lyric_enable_background", value).apply());
                                 lineGradient.setOnCheckedChangeListener((button, value) -> prefs.edit().putBoolean("lyric_enable_line_gradient", value).apply());
-                                sendToken.setOnCheckedChangeListener((button, value) -> prefs.edit().putBoolean("lyrics_send_token", value).apply());
+                                swapTranslations.setOnCheckedChangeListener((button, value) -> prefs.edit().putBoolean("lyrics_swap_translations", value).apply());
+                                hideOriginal.setOnCheckedChangeListener((button, value) -> prefs.edit().putBoolean("lyrics_hide_original", value).apply());
 
                                 String style = prefs.getString("lyric_animation_style", "Beautiful Lyrics");
                                 visualBeautiful.setChecked(style.equals("Beautiful Lyrics"));
@@ -1041,7 +1043,8 @@ public class RemoveCreateButtonHook extends SpotifyHook {
                                 low.setChecked(quality.equals("low"));
                                 superLow.setChecked(quality.equals("superLow"));
 
-                                sendToken.setChecked(prefs.getBoolean("lyrics_send_token", true));
+                                swapTranslations.setChecked(prefs.getBoolean("lyrics_swap_translations", false));
+                                hideOriginal.setChecked(prefs.getBoolean("lyrics_hide_original", false));
                             });
 
                             experimentalSettings.setOnClickListener(v -> {

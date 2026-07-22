@@ -602,19 +602,45 @@
                                 </LinearLayout>
                         </RadioGroup>
 
-                        <View
+                        <LinearLayout
                                 android:layout_width="match_parent"
-                                android:layout_height="1dp"
-                                android:alpha="0.08"
-                                android:background="?attr/colorOnSurface"
-                                android:layout_marginTop="6dp"
-                                android:layout_marginBottom="16dp" />
+                                android:layout_height="56dp"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical"
+                                android:layout_marginBottom="16dp"
+                                android:clickable="true" android:focusable="true"
+                                android:background="@drawable/row_click_bg">
 
-                        <TextView android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Privacy"
-                                style="@style/TextAppearance.Material3.TitleLarge"
-                                android:paddingBottom="12dp" />
+                                <LinearLayout
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:orientation="vertical">
+
+                                        <TextView
+                                                android:layout_width="wrap_content"
+                                                android:layout_height="wrap_content"
+                                                android:text="Swap Translated Lines"
+                                                android:textColor="@color/white"
+                                                android:textSize="15sp"
+                                                android:paddingBottom="4dp" />
+
+                                        <TextView
+                                                style="@style/TextAppearance.Material3.BodySmall"
+                                                android:layout_width="wrap_content"
+                                                android:layout_height="wrap_content"
+                                                android:text="Makes the translated text the main line, with the original language being smaller underneath"
+                                                android:textColor="?attr/colorOnSurfaceVariant" />
+                                </LinearLayout>
+
+                                <com.google.android.material.materialswitch.MaterialSwitch
+                                        android:id="@+id/switch_swap_translations"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:paddingHorizontal="8dp"
+                                        android:checked="true"
+                                        android:contentDescription="Send Access Token" />
+                        </LinearLayout>
 
                         <LinearLayout
                                 android:layout_width="match_parent"
@@ -634,7 +660,7 @@
                                         <TextView
                                                 android:layout_width="wrap_content"
                                                 android:layout_height="wrap_content"
-                                                android:text="Send Access Token"
+                                                android:text="Hide Original Lines"
                                                 android:textColor="@color/white"
                                                 android:textSize="15sp"
                                                 android:paddingBottom="4dp" />
@@ -643,12 +669,12 @@
                                                 style="@style/TextAppearance.Material3.BodySmall"
                                                 android:layout_width="wrap_content"
                                                 android:layout_height="wrap_content"
-                                                android:text="Send your Spotify access token to the Beautiful Lyrics API. If disabled, some songs will not load lyrics"
+                                                android:text="When translations are active, hides the original language"
                                                 android:textColor="?attr/colorOnSurfaceVariant" />
                                 </LinearLayout>
 
                                 <com.google.android.material.materialswitch.MaterialSwitch
-                                        android:id="@+id/switch_send_token"
+                                        android:id="@+id/switch_hide_original"
                                         android:layout_width="wrap_content"
                                         android:layout_height="wrap_content"
                                         android:paddingHorizontal="8dp"

@@ -9,6 +9,7 @@ import com.github.pemistahl.lingua.api.LanguageDetectorBuilder;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.lenerd46.spotifyplus.beautifullyrics.entities.lyrics.*;
+import com.lenerd46.spotifyplus.beautifullyrics.translation.LyricsTranslationMapper;
 import de.robv.android.xposed.XposedBridge;
 
 import java.util.ArrayList;
@@ -43,10 +44,17 @@ public class LyricUtilities {
     }
 
     private static String getLanguage(String text) {
-        final LanguageDetector detector = LanguageDetectorBuilder.fromAllLanguages().build();
-        final Language detectedLanguage = detector.detectLanguageOf(text);
-
-        return detectedLanguage.getIsoCode639_1().toString();
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        try {
+            final LanguageDetector detector = LanguageDetectorBuilder.fromAllLanguages().build();
+            final Language detectedLanguage = detector.detectLanguageOf(text);
+            return detectedLanguage.getIsoCode639_1().toString();
+        } catch (Exception e) {
+            XposedBridge.log(e);
+            return "";
+        }
     }
 
     public static TransformedLyrics transformLyrics(ProviderLyrics providedLyrics, Activity activity) {
@@ -146,12 +154,7 @@ public class LyricUtilities {
 
                 if (vocalSet != null) {
                     try {
-                        String text = vocalSet.lead.syllables.get(0).text;
-
-                        for (int i = 1; i < vocalSet.lead.syllables.size(); i++) {
-                            var syllable = vocalSet.lead.syllables.get(i);
-                            text += (syllable.isPartOfWord ? "" : " ") + syllable.text;
-                        }
+                        String text = LyricsTranslationMapper.reconstructLine(vocalSet.lead.syllables);
 
                         lines.add(text);
                         vocalLines.add(vocalSet);

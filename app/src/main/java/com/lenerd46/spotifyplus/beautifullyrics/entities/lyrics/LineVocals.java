@@ -30,6 +30,8 @@ public class LineVocals implements SyncableVocals {
     private final Spring glowSpring;
     private final SharedPreferences prefs;
     private final boolean lineGradient;
+    private final float baseFontSize;
+    private boolean secondary;
 
     private final List<Pair<Double, Double>> glowRange = List.of(
             Pair.create(0d, 0d),
@@ -43,9 +45,16 @@ public class LineVocals implements SyncableVocals {
     }
 
     public LineVocals(FlexboxLayout container, LineVocal vocal, boolean isRomanized, Activity activity) {
+        this(container, vocal, isRomanized, activity, 30f, false);
+    }
+
+    public LineVocals(FlexboxLayout container, LineVocal vocal, boolean isRomanized, Activity activity,
+            float fontSize, boolean secondary) {
         this.container = container;
         activityChanged = new ActivityChangedSource();
         prefs = activity.getSharedPreferences("SpotifyPlus", Context.MODE_PRIVATE);
+        this.baseFontSize = fontSize;
+        this.secondary = secondary;
 
         this.startTime = vocal.startTime;
         this.duration = vocal.endTime - vocal.startTime;
@@ -58,7 +67,7 @@ public class LineVocals implements SyncableVocals {
         lyricText.setLineState(true);
 
         lyricText.setTextColor(Color.WHITE);
-        lyricText.setTextSize(30f);
+        lyricText.setTextSize(secondary ? Math.max(18f, fontSize * 0.7f) : fontSize);
         lyricText.setPadding(0, 0, 1, 0);
         lyricText.setTypeface(References.beautifulFont.get());
 
@@ -70,6 +79,15 @@ public class LineVocals implements SyncableVocals {
 
         container.addView(lyricText);
         setToGeneralState(false);
+    }
+
+    public void setSecondary(boolean secondary) {
+        if (this.secondary == secondary) {
+            return;
+        }
+        this.secondary = secondary;
+        lyricText.setTextSize(secondary ? Math.max(18f, baseFontSize * 0.7f) : baseFontSize);
+        evaluateClassState();
     }
 
     private void setToGeneralState(boolean state) {
@@ -96,7 +114,8 @@ public class LineVocals implements SyncableVocals {
         float glowAlpha = (float) glowSpring.update(deltaTime);
 
         if (lineGradient) {
-            lyricText.updateShadow(glowAlpha * 0.5f, 4 + (8 * glowAlpha));
+            lyricText.updateShadow(glowAlpha * (secondary ? 0.25f : 0.5f),
+                    (secondary ? 2 : 4) + ((secondary ? 4 : 8) * glowAlpha));
             lyricText.setProgress((float) (120 * timeScale));
         }
 
@@ -105,16 +124,18 @@ public class LineVocals implements SyncableVocals {
 
     private void evaluateClassState() {
         if (state == LyricState.ACTIVE) {
-            lyricText.setTextColor(Color.argb(255, 255, 255, 255));
-            lyricText.setGradientColors(lineGradient ? new int[]{0xFFFFFFFF, 0x78FFFFFF} : new int[]{0xFFFFFFFF, 0xFFFFFFFF});
+            lyricText.setTextColor(Color.argb(secondary ? 217 : 255, 255, 255, 255));
+            lyricText.setGradientColors(lineGradient
+                    ? new int[]{secondary ? 0xD9FFFFFF : 0xFFFFFFFF, secondary ? 0x50FFFFFF : 0x78FFFFFF}
+                    : new int[]{secondary ? 0xD9FFFFFF : 0xFFFFFFFF, secondary ? 0xD9FFFFFF : 0xFFFFFFFF});
         } else if (state == LyricState.SUNG) {
-            lyricText.setTextColor(Color.argb(100, 255, 255, 255));
+            lyricText.setTextColor(Color.argb(secondary ? 72 : 100, 255, 255, 255));
             lyricText.updateShadow(0f, 0f);
 
 //            updateLiveTextVisuals(0, 1.0 / 60);
         } else {
-            lyricText.setTextColor(Color.argb(255, 255, 255, 255));
-            lyricText.setGradientColors(new int[]{0xFFFFFFFF, 0x3CFFFFFF});
+            lyricText.setTextColor(Color.argb(secondary ? 190 : 255, 255, 255, 255));
+            lyricText.setGradientColors(new int[]{secondary ? 0xBEFFFFFF : 0xFFFFFFFF, secondary ? 0x30FFFFFF : 0x3CFFFFFF});
 
 //            updateLiveTextVisuals(0, 1.0 / 60);
         }
