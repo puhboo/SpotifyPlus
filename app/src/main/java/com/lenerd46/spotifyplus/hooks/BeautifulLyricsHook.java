@@ -1407,7 +1407,7 @@ public class BeautifulLyricsHook extends SpotifyHook {
     private void update(Map<FlexboxLayout, List<SyncableVocals>> vocalGroups, double timestamp, double deltaTime,
             boolean skipped) {
         try {
-            for (var vocalGroup : new ArrayList<>(vocalGroups.values())) {
+            for (var vocalGroup : vocalGroups.values()) {
                 for (var vocal : vocalGroup) {
                     vocal.animate(timestamp, deltaTime, skipped);
                 }

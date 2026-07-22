@@ -1,1 +1,2 @@
 com.lenerd46.spotifyplus.XposedLoader
+com.lenerd46.spotifyplus.hooks.ThemeResourcesHook

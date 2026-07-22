@@ -10,18 +10,12 @@ import android.view.ViewGroup;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class AnimatedBackgroundView extends View {
-    private static float DOWNSAMPLE_FACTOR = 0.12f;
-
     private static final int BLUR_RADIUS = 20;
-    private static final int BLUR_PASSES = 1;
-
-    private static int BLOB_COUNT = 16;
     private static final long TRANSITION_DURATION_MS = 1000L;
     private static final int BUFFER_COUNT = 3;
 
@@ -29,12 +23,14 @@ public class AnimatedBackgroundView extends View {
     private static final int PALETTE_DARK_MUTED = 1;
     private static final int PALETTE_BRIGHT_NEUTRAL = 2;
 
+    private final float downsampleFactor;
+    private final int blobCount;
     private int paletteMode = PALETTE_COLORFUL;
 
     private final HandlerThread renderThread;
-    private Handler renderHandler;
+    private final Handler renderHandler;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final AtomicBoolean isRendering = new AtomicBoolean(false);
+    private final AtomicBoolean renderScheduled = new AtomicBoolean(false);
     private final Object lock = new Object();
 
     private final Random random = new Random();
@@ -48,86 +44,73 @@ public class AnimatedBackgroundView extends View {
 
     private Bitmap sourceImage;
     private TrackAnalysis currentAnalysis = TrackAnalysis.defaultTrack;
-    private int baseColor = 0xFF101010;
+    private volatile int baseColor = 0xFF101010;
 
     private List<Blob> blobs = new ArrayList<>();
     private final Paint blobPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
     private final Paint drawPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Matrix shaderMatrix = new Matrix();
+    private final Rect drawBounds = new Rect();
 
     private long startTimeMs;
     private boolean isTransitioning = false;
     private Bitmap previousBitmap;
     private long transitionStartMs;
-    private long lastFrameTimeNanos = 0;
+    private long lastRenderTimeNanos = 0;
 
     private float animationSpeedMultiplier = 1.0f;
     private float breathingFrequency = 1.0f;
 
     private int[] blurBufA, blurBufB;
-    private Choreographer.FrameCallback frameCallback = null;
+    private int[] blurOutgoingX, blurIncomingX, blurOutgoingY, blurIncomingY;
+    private final Choreographer.FrameCallback frameCallback;
 
     public AnimatedBackgroundView(Context ctx, Bitmap bitmap, ViewGroup root) {
         super(ctx);
         setLayerType(LAYER_TYPE_HARDWARE, null);
 
-        if (bitmap != null) {
-            this.sourceImage = Bitmap.createScaledBitmap(bitmap, 100, 100, true);
-        } else {
-            this.sourceImage = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
-        }
+        sourceImage = createThumbnail(bitmap);
 
         SharedPreferences prefs = ctx.getSharedPreferences("SpotifyPlus", Context.MODE_PRIVATE);
         String quality = prefs.getString("lyric_background_quality", "high");
-
+        float selectedDownsampleFactor = 0.12f;
+        int selectedBlobCount = 16;
         switch (quality) {
-            case "high":
-                DOWNSAMPLE_FACTOR = 0.12f;
-                BLOB_COUNT = 16;
-                break;
-
             case "mid":
-                DOWNSAMPLE_FACTOR = 0.06f;
-                BLOB_COUNT = 10;
+                selectedDownsampleFactor = 0.06f;
+                selectedBlobCount = 10;
                 break;
-
             case "low":
-                DOWNSAMPLE_FACTOR = 0.04f;
-                BLOB_COUNT = 6;
+                selectedDownsampleFactor = 0.04f;
+                selectedBlobCount = 6;
                 break;
-
+            case "superLow":
             case "superlow":
-                DOWNSAMPLE_FACTOR = 0.02f;
-                BLOB_COUNT = 4;
+                selectedDownsampleFactor = 0.02f;
+                selectedBlobCount = 4;
                 break;
         }
+        downsampleFactor = selectedDownsampleFactor;
+        blobCount = selectedBlobCount;
 
         renderThread = new HandlerThread("FluidBG");
         renderThread.start();
         renderHandler = new Handler(renderThread.getLooper());
 
-        overlayBgPaint.setColor(0x88000000);
-        overlayTextPaint.setColor(Color.WHITE);
-        overlayTextPaint.setTextSize(dp(11));
-        overlayTextPaint.setFakeBoldText(true);
-
         startTimeMs = SystemClock.elapsedRealtime();
-        lastMetricsSecondMs = startTimeMs;
-
         blobPaint.setXfermode(null);
         blobPaint.setStyle(Paint.Style.FILL);
+        blobPaint.setAlpha(190);
 
-        startTimeMs = SystemClock.elapsedRealtime();
-
-        frameCallback = frameTimeNanos -> {
-            if (getWindowToken() == null) return;
-            long dt = (lastFrameTimeNanos == 0)
-                    ? 16_000_000
-                    : (frameTimeNanos - lastFrameTimeNanos);
-            lastFrameTimeNanos = frameTimeNanos;
-            updateUiMetrics(dt);
-
-            renderHandler.post(() -> renderFrame(dt));
-            Choreographer.getInstance().postFrameCallback(frameCallback);
+        frameCallback = new Choreographer.FrameCallback() {
+            @Override
+            public void doFrame(long frameTimeNanos) {
+                if (getWindowToken() == null) return;
+                if (renderScheduled.compareAndSet(false, true)) {
+                    renderHandler.post(AnimatedBackgroundView.this::renderFrame);
+                }
+                Choreographer.getInstance().postFrameCallback(this);
+            }
         };
 
         renderHandler.post(this::internalRebuildResources);
@@ -135,35 +118,41 @@ public class AnimatedBackgroundView extends View {
 
     public void updateImage(Bitmap newImage) {
         if (newImage == null || newImage.isRecycled()) return;
-        final Bitmap smallCopy = Bitmap.createScaledBitmap(newImage, 100, 100, true);
-        synchronized (lock) {
-            if (renderedBitmap != null) {
-                previousBitmap = renderedBitmap;
-                transitionStartMs = SystemClock.elapsedRealtime();
-                isTransitioning = true;
+        final Bitmap smallCopy = createThumbnail(newImage);
+        if (!renderHandler.post(() -> {
+            synchronized (lock) {
+                if (previousBitmap != null) previousBitmap.recycle();
+                if (renderedBitmap != null && !renderedBitmap.isRecycled()) {
+                    previousBitmap = renderedBitmap.copy(Bitmap.Config.ARGB_8888, false);
+                    transitionStartMs = SystemClock.elapsedRealtime();
+                    isTransitioning = true;
+                }
             }
+            if (sourceImage != null) sourceImage.recycle();
             sourceImage = smallCopy;
+            internalRebuildResources();
+        })) {
+            smallCopy.recycle();
         }
-        renderHandler.post(this::internalRebuildResources);
     }
 
     public void updateTrackAnalysis(TrackAnalysis analysis) {
-        synchronized (lock) {
-            this.currentAnalysis = (analysis != null) ? analysis : TrackAnalysis.defaultTrack;
-        }
-        renderHandler.post(this::internalRebuildResources);
-    }
-
-    private boolean isAnalysisDefault() {
-        return currentAnalysis == TrackAnalysis.defaultTrack ||
-                (currentAnalysis.acousticness == 1 && currentAnalysis.danceability == 1 && currentAnalysis.tempo == 1);
+        TrackAnalysis nextAnalysis = (analysis != null) ? analysis : TrackAnalysis.defaultTrack;
+        renderHandler.post(() -> {
+            currentAnalysis = nextAnalysis;
+            internalRebuildResources();
+        });
     }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        allocateBuffersIfNeeded(getWidth(), getHeight());
-        renderHandler.post(this::internalRebuildResources);
+        int width = getWidth();
+        int height = getHeight();
+        renderHandler.post(() -> {
+            allocateBuffersIfNeeded(width, height);
+            internalRebuildResources();
+        });
         Choreographer.getInstance().postFrameCallback(frameCallback);
     }
 
@@ -172,25 +161,34 @@ public class AnimatedBackgroundView extends View {
         super.onDetachedFromWindow();
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         renderHandler.removeCallbacksAndMessages(null);
-        renderThread.quitSafely();
-        synchronized (lock) {
-            for (int i = 0; i < BUFFER_COUNT; i++) {
-                if (buffers[i] != null) buffers[i].recycle();
+        mainHandler.removeCallbacksAndMessages(null);
+        renderHandler.post(() -> {
+            synchronized (lock) {
+                for (int i = 0; i < BUFFER_COUNT; i++) {
+                    if (buffers[i] != null) buffers[i].recycle();
+                    buffers[i] = null;
+                    canvases[i] = null;
+                }
+                if (previousBitmap != null) previousBitmap.recycle();
+                previousBitmap = null;
+                renderedBitmap = null;
             }
-        }
+            if (sourceImage != null) sourceImage.recycle();
+            sourceImage = null;
+            renderThread.quitSafely();
+        });
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        allocateBuffersIfNeeded(w, h);
-        renderHandler.post(this::internalRebuildResources);
+        renderHandler.post(() -> allocateBuffersIfNeeded(w, h));
     }
 
     private void allocateBuffersIfNeeded(int vw, int vh) {
         if (vw <= 0 || vh <= 0) return;
-        int targetW = Math.max(1, Math.round(vw * DOWNSAMPLE_FACTOR));
-        int targetH = Math.max(1, Math.round(vh * DOWNSAMPLE_FACTOR));
+        int targetW = Math.max(1, Math.round(vw * downsampleFactor));
+        int targetH = Math.max(1, Math.round(vh * downsampleFactor));
 
         if (buffers[0] != null
                 && buffers[0].getWidth() == targetW
@@ -208,62 +206,53 @@ public class AnimatedBackgroundView extends View {
             offH = targetH;
             blurBufA = new int[offW * offH];
             blurBufB = new int[offW * offH];
-        }
-    }
-
-    private static class PaletteInfo {
-        float avgS;
-        float avgV;
-        int mode;
-    }
-
-    private PaletteInfo analyzePalette(Bitmap b) {
-        PaletteInfo info = new PaletteInfo();
-        int w = b.getWidth();
-        int h = b.getHeight();
-        float[] hsv = new float[3];
-        double sumS = 0.0, sumV = 0.0;
-        int count = 0;
-
-        for (int x = 0; x < w; x += 4) {
-            for (int y = 0; y < h; y += 4) {
-                int c = b.getPixel(x, y);
-                Color.colorToHSV(c, hsv);
-                sumS += hsv[1];
-                sumV += hsv[2];
-                count++;
+            blurOutgoingX = new int[offW];
+            blurIncomingX = new int[offW];
+            blurOutgoingY = new int[offH];
+            blurIncomingY = new int[offH];
+            for (int x = 0; x < offW; x++) {
+                blurOutgoingX[x] = clamp(x - BLUR_RADIUS, 0, offW - 1);
+                blurIncomingX[x] = clamp(x + BLUR_RADIUS + 1, 0, offW - 1);
             }
+            for (int y = 0; y < offH; y++) {
+                blurOutgoingY[y] = clamp(y - BLUR_RADIUS, 0, offH - 1) * offW;
+                blurIncomingY[y] = clamp(y + BLUR_RADIUS + 1, 0, offH - 1) * offW;
+            }
+            renderedBitmap = null;
+            renderHeadIndex = 0;
         }
-
-        if (count == 0) {
-            info.avgS = 0f;
-            info.avgV = 0f;
-            info.mode = PALETTE_DARK_MUTED;
-            return info;
-        }
-
-        info.avgS = (float) (sumS / count);
-        info.avgV = (float) (sumV / count);
-
-        if (info.avgV >= 0.75f && info.avgS <= 0.25f) {
-            info.mode = PALETTE_BRIGHT_NEUTRAL;
-        } else if (info.avgV < 0.30f || info.avgS < 0.18f) {
-            info.mode = PALETTE_DARK_MUTED;
-        } else {
-            info.mode = PALETTE_COLORFUL;
-        }
-        return info;
     }
 
     private void internalRebuildResources() {
         if (sourceImage == null) return;
 
-        // Note: We use the class member 'random' here, no seeding from image
-        PaletteInfo pi = analyzePalette(sourceImage);
-        paletteMode = pi.mode;
+        float[] hsv = new float[3];
+        double sumS = 0.0;
+        double sumV = 0.0;
+        int sampleCount = 0;
+        for (int x = 0; x < sourceImage.getWidth(); x += 4) {
+            for (int y = 0; y < sourceImage.getHeight(); y += 4) {
+                Color.colorToHSV(sourceImage.getPixel(x, y), hsv);
+                sumS += hsv[1];
+                sumV += hsv[2];
+                sampleCount++;
+            }
+        }
+        float averageSaturation = sampleCount == 0 ? 0f : (float) (sumS / sampleCount);
+        float averageValue = sampleCount == 0 ? 0f : (float) (sumV / sampleCount);
+        if (averageValue >= 0.75f && averageSaturation <= 0.25f) {
+            paletteMode = PALETTE_BRIGHT_NEUTRAL;
+        } else if (averageValue < 0.30f || averageSaturation < 0.18f) {
+            paletteMode = PALETTE_DARK_MUTED;
+        } else {
+            paletteMode = PALETTE_COLORFUL;
+        }
 
-        // Calculate Modifiers based on Analysis
-        if (isAnalysisDefault()) {
+        boolean usesDefaultAnalysis = currentAnalysis == TrackAnalysis.defaultTrack
+                || (currentAnalysis.acousticness == 1
+                && currentAnalysis.danceability == 1
+                && currentAnalysis.tempo == 1);
+        if (usesDefaultAnalysis) {
             animationSpeedMultiplier = 1.0f;
             breathingFrequency = 1.0f;
         } else {
@@ -274,40 +263,187 @@ public class AnimatedBackgroundView extends View {
             breathingFrequency = bpm / 110.0f;
         }
 
-        // Build blob colors
-        List<Integer> blobColors = extractDominantColors(sourceImage, BLOB_COUNT, paletteMode);
+        HueBucket[] hueBuckets = new HueBucket[36];
+        for (int x = 0; x < sourceImage.getWidth(); x++) {
+            for (int y = 0; y < sourceImage.getHeight(); y++) {
+                int color = sourceImage.getPixel(x, y);
+                if (Color.alpha(color) < 64) continue;
 
-        if (blobColors.isEmpty()) {
-            int avg = calculateAverageColor(sourceImage);
-            baseColor = buildBaseColor(avg);
-            blobColors = new ArrayList<>();
-            for (int i = 0; i < BLOB_COUNT; i++) blobColors.add(avg);
-        } else {
-            int primaryColor = blobColors.get(0);
-            baseColor = buildBaseColor(primaryColor);
+                Color.colorToHSV(color, hsv);
+                float hue = hsv[0];
+                float saturation = hsv[1];
+                float value = hsv[2];
+                if (value < 0.03f) continue;
+                if (paletteMode == PALETTE_COLORFUL) {
+                    if (saturation < 0.18f || value < 0.18f) continue;
+                } else if (paletteMode == PALETTE_DARK_MUTED) {
+                    if (value < 0.05f && saturation < 0.05f) continue;
+                } else if (value < 0.50f && saturation < 0.08f) {
+                    continue;
+                }
+
+                int bin = clamp((int) (hue / 10f), 0, 35);
+                HueBucket bucket = hueBuckets[bin];
+                if (bucket == null) {
+                    bucket = new HueBucket();
+                    bucket.hueCenter = bin * 10f + 5f;
+                    hueBuckets[bin] = bucket;
+                }
+                bucket.sumR += Color.red(color);
+                bucket.sumG += Color.green(color);
+                bucket.sumB += Color.blue(color);
+                bucket.sumS += saturation;
+                bucket.sumV += value;
+                bucket.count++;
+            }
         }
 
-        List<Blob> newBlobs = new ArrayList<>();
+        List<HueBucket> rankedBuckets = new ArrayList<>();
+        for (HueBucket bucket : hueBuckets) {
+            if (bucket == null || bucket.count == 0) continue;
+            float vividness = (bucket.sumS / bucket.count) * 0.7f
+                    + (bucket.sumV / bucket.count) * 0.3f;
+            if (paletteMode == PALETTE_COLORFUL) {
+                bucket.score = bucket.count * vividness;
+            } else if (paletteMode == PALETTE_DARK_MUTED) {
+                bucket.score = bucket.count * (0.7f + vividness * 0.3f);
+            } else {
+                bucket.score = bucket.count * (1.0f + vividness * 0.2f);
+            }
+            rankedBuckets.add(bucket);
+        }
 
-        for (int i = 0; i < BLOB_COUNT; i++) {
+        List<Integer> blobColors = new ArrayList<>(blobCount);
+        if (rankedBuckets.isEmpty()) {
+            int color = sourceImage.getPixel(sourceImage.getWidth() / 2, sourceImage.getHeight() / 2);
+            for (int i = 0; i < blobCount; i++) blobColors.add(color);
+        } else {
+            Collections.sort(rankedBuckets, (left, right) -> Float.compare(right.score, left.score));
+            List<HueBucket> mainBuckets = new ArrayList<>(3);
+            mainBuckets.add(rankedBuckets.get(0));
+            for (int i = 1; i < rankedBuckets.size() && mainBuckets.size() < 3; i++) {
+                HueBucket candidate = rankedBuckets.get(i);
+                boolean farEnough = true;
+                for (HueBucket main : mainBuckets) {
+                    float distance = Math.abs(candidate.hueCenter - main.hueCenter);
+                    if (distance > 180f) distance = 360f - distance;
+                    if (distance < 22f) {
+                        farEnough = false;
+                        break;
+                    }
+                }
+                if (farEnough) mainBuckets.add(candidate);
+            }
+
+            int mainCount = mainBuckets.size();
+            if (mainCount == 1) {
+                int color = bucketToColor(mainBuckets.get(0));
+                for (int i = 0; i < blobCount; i++) blobColors.add(color);
+            } else {
+                float[] weights;
+                if (mainCount == 2) {
+                    if (paletteMode == PALETTE_DARK_MUTED) {
+                        weights = new float[]{0.70f, 0.30f};
+                    } else if (paletteMode == PALETTE_BRIGHT_NEUTRAL) {
+                        weights = new float[]{0.75f, 0.25f};
+                    } else {
+                        weights = new float[]{0.65f, 0.35f};
+                    }
+                } else if (paletteMode == PALETTE_DARK_MUTED) {
+                    weights = new float[]{0.60f, 0.25f, 0.15f};
+                } else if (paletteMode == PALETTE_BRIGHT_NEUTRAL) {
+                    weights = new float[]{0.70f, 0.18f, 0.12f};
+                } else {
+                    weights = new float[]{0.55f, 0.25f, 0.20f};
+                }
+
+                int[] counts = new int[mainCount];
+                int primaryMinimum = Math.max(blobCount / 3, 4);
+                int assigned = 0;
+                for (int i = 0; i < mainCount; i++) {
+                    int minimum = i == 0 ? primaryMinimum : 2;
+                    counts[i] = clamp(Math.round(weights[i] * blobCount), minimum, blobCount);
+                    assigned += counts[i];
+                }
+                if (assigned > blobCount) {
+                    int excess = assigned - blobCount;
+                    for (int i = mainCount - 1; i >= 0 && excess > 0; i--) {
+                        int minimum = i == 0 ? primaryMinimum : 2;
+                        int delta = Math.min(counts[i] - minimum, excess);
+                        counts[i] -= delta;
+                        excess -= delta;
+                    }
+                    assigned = blobCount;
+                }
+                if (assigned < blobCount) counts[0] += blobCount - assigned;
+
+                for (int i = 0; i < mainCount; i++) {
+                    int color = bucketToColor(mainBuckets.get(i));
+                    for (int j = 0; j < counts[i]; j++) blobColors.add(color);
+                }
+                Collections.shuffle(blobColors, random);
+            }
+        }
+
+        int seedColor = blobColors.get(0);
+        Color.colorToHSV(seedColor, hsv);
+        if (paletteMode == PALETTE_COLORFUL) {
+            hsv[1] *= 0.35f;
+            hsv[2] = clampFloat(0.13f + hsv[2] * 0.19f, 0.13f, 0.32f);
+        } else if (paletteMode == PALETTE_DARK_MUTED) {
+            hsv[1] *= 0.30f;
+            hsv[2] = clampFloat(0.03f + hsv[2] * 0.18f, 0.03f, 0.24f);
+        } else {
+            hsv[1] = Math.min(hsv[1] * 0.3f, 0.10f);
+            hsv[2] = clampFloat(0.85f + hsv[2] * 0.10f, 0.85f, 0.99f);
+        }
+        if (!usesDefaultAnalysis) {
+            if (currentAnalysis.valence < 0.3f) {
+                hsv[2] *= 0.8f;
+            } else if (currentAnalysis.valence > 0.7f) {
+                hsv[2] = clampFloat(hsv[2] * 1.1f, 0f, 0.9f);
+            }
+        }
+        baseColor = Color.HSVToColor(hsv);
+
+        List<Blob> newBlobs = new ArrayList<>(blobCount);
+        for (int i = 0; i < blobCount; i++) {
             int rawColor = blobColors.get(i);
-            int processedColor = boostColorForVividness(rawColor);
+            Color.colorToHSV(rawColor, hsv);
+            if (paletteMode == PALETTE_COLORFUL) {
+                hsv[1] = clampFloat(hsv[1] * 1.10f, 0.45f, 0.90f);
+                hsv[2] = clampFloat(0.50f + hsv[2] * 0.30f, 0.55f, 0.80f);
+            } else if (paletteMode == PALETTE_DARK_MUTED) {
+                hsv[1] = clampFloat(hsv[1] * 0.9f, 0.08f, 0.45f);
+                hsv[2] = clampFloat(0.18f + hsv[2] * 0.24f, 0.12f, 0.46f);
+            } else {
+                hsv[1] = clampFloat(hsv[1] * 1.1f, 0.05f, 0.35f);
+                hsv[2] = clampFloat(0.78f + hsv[2] * 0.17f, 0.78f, 0.97f);
+            }
+            if (!usesDefaultAnalysis) {
+                float valence = currentAnalysis.valence;
+                float energy = currentAnalysis.energy;
+                if (valence > 0.6f) {
+                    hsv[1] = clampFloat(hsv[1] * (1.0f + (valence - 0.5f) * 0.5f), 0f, 1f);
+                    hsv[2] = clampFloat(hsv[2] * 1.1f, 0f, 1f);
+                } else if (valence < 0.4f) {
+                    hsv[1] *= 0.7f + valence * 0.3f;
+                    hsv[2] *= 0.8f + valence * 0.2f;
+                }
+                if (energy > 0.7f) hsv[1] = clampFloat(hsv[1] * 1.15f, 0f, 1f);
+            }
+            int processedColor = Color.HSVToColor(hsv);
 
-            // Spawning logic: Center biased but random
             float originX = 0.5f + (random.nextFloat() - 0.5f) * 0.8f;
             float originY = 0.5f + (random.nextFloat() - 0.5f) * 0.8f;
             float radius = 0.35f + random.nextFloat() * 0.4f;
-
-            // Base velocity - Start in random directions
             float vx = (random.nextFloat() - 0.5f) * 0.003f;
             float vy = (random.nextFloat() - 0.5f) * 0.003f;
 
             newBlobs.add(new Blob(originX, originY, radius, processedColor, vx, vy));
         }
-        this.blobs = newBlobs;
+        blobs = newBlobs;
     }
-
-    // === COLOR EXTRACTION (Same logic, just uses shared Random for shuffle) ===
 
     private static class HueBucket {
         long sumR, sumG, sumB;
@@ -317,169 +453,6 @@ public class AnimatedBackgroundView extends View {
         float score;
     }
 
-    private List<Integer> extractDominantColors(Bitmap b, int needed, int paletteMode) {
-        int w = b.getWidth();
-        int h = b.getHeight();
-
-        HueBucket[] buckets = new HueBucket[36];
-        float[] hsv = new float[3];
-
-        for (int x = 0; x < w; x++) {
-            for (int y = 0; y < h; y++) {
-                int c = b.getPixel(x, y);
-                int a = Color.alpha(c);
-                if (a < 64) continue;
-
-                Color.colorToHSV(c, hsv);
-                float hDeg = hsv[0];
-                float s = hsv[1];
-                float v = hsv[2];
-
-                if (v < 0.03f) continue;
-
-                if (paletteMode == PALETTE_COLORFUL) {
-                    if (s < 0.18f || v < 0.18f) continue;
-                } else if (paletteMode == PALETTE_DARK_MUTED) {
-                    if (v < 0.05f && s < 0.05f) continue;
-                } else {
-                    if (v < 0.50f && s < 0.08f) continue;
-                }
-
-                int bin = (int) (hDeg / 10f);
-                if (bin < 0) bin = 0;
-                if (bin > 35) bin = 35;
-
-                HueBucket bucket = buckets[bin];
-                if (bucket == null) {
-                    bucket = new HueBucket();
-                    bucket.hueCenter = bin * 10f + 5f;
-                    buckets[bin] = bucket;
-                }
-
-                bucket.sumR += Color.red(c);
-                bucket.sumG += Color.green(c);
-                bucket.sumB += Color.blue(c);
-                bucket.sumS += s;
-                bucket.sumV += v;
-                bucket.count++;
-            }
-        }
-
-        List<HueBucket> list = new ArrayList<>();
-        for (HueBucket bkt : buckets) {
-            if (bkt == null || bkt.count == 0) continue;
-            float meanS = bkt.sumS / bkt.count;
-            float meanV = bkt.sumV / bkt.count;
-            float vividness = meanS * 0.7f + meanV * 0.3f;
-
-            if (paletteMode == PALETTE_COLORFUL) {
-                bkt.score = bkt.count * vividness;
-            } else if (paletteMode == PALETTE_DARK_MUTED) {
-                bkt.score = bkt.count * (0.7f + vividness * 0.3f);
-            } else {
-                bkt.score = bkt.count * (1.0f + vividness * 0.2f);
-            }
-            list.add(bkt);
-        }
-
-        if (list.isEmpty()) {
-            List<Integer> fallback = new ArrayList<>();
-            fallback.add(b.getPixel(b.getWidth() / 2, b.getHeight() / 2));
-            return fallback;
-        }
-
-        Collections.sort(list, (o1, o2) -> Float.compare(o2.score, o1.score));
-
-        final float MIN_MAIN_HUE_DIST = 22f;
-        List<HueBucket> mainBuckets = new ArrayList<>();
-        mainBuckets.add(list.get(0));
-
-        for (int i = 1; i < list.size() && mainBuckets.size() < 3; i++) {
-            HueBucket cand = list.get(i);
-            boolean farEnough = true;
-            for (HueBucket m : mainBuckets) {
-                float dh = Math.abs(cand.hueCenter - m.hueCenter);
-                if (dh > 180f) dh = 360f - dh;
-                if (dh < MIN_MAIN_HUE_DIST) {
-                    farEnough = false;
-                    break;
-                }
-            }
-            if (farEnough) mainBuckets.add(cand);
-        }
-
-        int mainCount = mainBuckets.size();
-
-        if (mainCount == 1) {
-            int color = bucketToColor(mainBuckets.get(0));
-            List<Integer> only = new ArrayList<>(needed);
-            for (int i = 0; i < needed; i++) only.add(color);
-            return only;
-        }
-
-        float[] weights;
-        if (mainCount == 2) {
-            if (paletteMode == PALETTE_DARK_MUTED) {
-                weights = new float[]{0.70f, 0.30f};
-            } else if (paletteMode == PALETTE_BRIGHT_NEUTRAL) {
-                weights = new float[]{0.75f, 0.25f};
-            } else {
-                weights = new float[]{0.65f, 0.35f};
-            }
-        } else {
-            if (paletteMode == PALETTE_DARK_MUTED) {
-                weights = new float[]{0.60f, 0.25f, 0.15f};
-            } else if (paletteMode == PALETTE_BRIGHT_NEUTRAL) {
-                weights = new float[]{0.70f, 0.18f, 0.12f};
-            } else {
-                weights = new float[]{0.55f, 0.25f, 0.20f};
-            }
-        }
-
-        int[] counts = new int[mainCount];
-        int primaryMin = Math.max(needed / 3, 4);
-        int accentMin = 2;
-
-        int assigned = 0;
-        for (int i = 0; i < mainCount; i++) {
-            int minCount = (i == 0 ? primaryMin : accentMin);
-            int c = Math.round(weights[i] * needed);
-            if (c < minCount) c = minCount;
-            if (c > needed) c = needed;
-            counts[i] = c;
-            assigned += c;
-        }
-
-        if (assigned > needed) {
-            int excess = assigned - needed;
-            for (int i = mainCount - 1; i >= 0 && excess > 0; i--) {
-                int minCount = (i == 0 ? primaryMin : accentMin);
-                int reducible = counts[i] - minCount;
-                if (reducible <= 0) continue;
-                int delta = Math.min(reducible, excess);
-                counts[i] -= delta;
-                excess -= delta;
-            }
-            assigned = needed;
-        }
-
-        if (assigned < needed) {
-            counts[0] += (needed - assigned);
-        }
-
-        List<Integer> out = new ArrayList<>(needed);
-        for (int i = 0; i < mainCount; i++) {
-            int color = bucketToColor(mainBuckets.get(i));
-            for (int j = 0; j < counts[i]; j++) {
-                out.add(color);
-            }
-        }
-
-        // Shuffle with the shared unseeded Random
-        Collections.shuffle(out, random);
-        return out;
-    }
-
     private static int bucketToColor(HueBucket bkt) {
         int avgR = (int) (bkt.sumR / bkt.count);
         int avgG = (int) (bkt.sumG / bkt.count);
@@ -487,91 +460,7 @@ public class AnimatedBackgroundView extends View {
         return Color.rgb(avgR, avgG, avgB);
     }
 
-    private int boostColorForVividness(int color) {
-        float[] hsv = new float[3];
-        Color.colorToHSV(color, hsv);
-
-        if (paletteMode == PALETTE_COLORFUL) {
-            hsv[1] = clampFloat(hsv[1] * 1.10f, 0.45f, 0.90f);
-            float v = hsv[2];
-            v = 0.50f + v * 0.30f;
-            v = clampFloat(v, 0.55f, 0.80f);
-            hsv[2] = v;
-        } else if (paletteMode == PALETTE_DARK_MUTED) {
-            hsv[1] = clampFloat(hsv[1] * 0.9f, 0.08f, 0.45f);
-            float v = hsv[2];
-            v = 0.18f + v * 0.24f;
-            v = clampFloat(v, 0.12f, 0.46f);
-            hsv[2] = v;
-        } else {
-            hsv[1] = clampFloat(hsv[1] * 1.1f, 0.05f, 0.35f);
-            float v = hsv[2];
-            v = 0.78f + v * 0.17f;
-            v = clampFloat(v, 0.78f, 0.97f);
-            hsv[2] = v;
-        }
-
-        if (!isAnalysisDefault()) {
-            float valence = currentAnalysis.valence;
-            float energy = currentAnalysis.energy;
-
-            if (valence > 0.6f) {
-                hsv[1] = clampFloat(hsv[1] * (1.0f + (valence - 0.5f) * 0.5f), 0f, 1f);
-                hsv[2] = clampFloat(hsv[2] * 1.1f, 0f, 1f);
-            } else if (valence < 0.4f) {
-                hsv[1] *= (0.7f + valence * 0.3f);
-                hsv[2] *= (0.8f + valence * 0.2f);
-            }
-
-            if (energy > 0.7f) {
-                hsv[1] = clampFloat(hsv[1] * 1.15f, 0f, 1f);
-            }
-        }
-
-        return Color.HSVToColor(hsv);
-    }
-
-    private int buildBaseColor(int seedColor) {
-        float[] hsv = new float[3];
-        Color.colorToHSV(seedColor, hsv);
-
-        if (paletteMode == PALETTE_COLORFUL) {
-            hsv[1] *= 0.35f;
-            float v = hsv[2];
-            v = 0.13f + v * 0.19f;
-            v = clampFloat(v, 0.13f, 0.32f);
-            hsv[2] = v;
-        } else if (paletteMode == PALETTE_DARK_MUTED) {
-            hsv[1] *= 0.30f;
-            float v = hsv[2];
-            v = 0.03f + v * 0.18f;
-            v = clampFloat(v, 0.03f, 0.24f);
-            hsv[2] = v;
-        } else {
-            hsv[1] = Math.min(hsv[1] * 0.3f, 0.10f);
-            float v = hsv[2];
-            v = 0.85f + v * 0.10f;
-            v = clampFloat(v, 0.85f, 0.99f);
-            hsv[2] = v;
-        }
-
-        if (!isAnalysisDefault()) {
-            if (currentAnalysis.valence < 0.3f) {
-                hsv[2] *= 0.8f;
-            } else if (currentAnalysis.valence > 0.7f) {
-                hsv[2] = clampFloat(hsv[2] * 1.1f, 0f, 0.9f);
-            }
-        }
-
-        return Color.HSVToColor(hsv);
-    }
-
-    // === RENDERING & NEW PHYSICS ===
-
-    private void renderFrame(long dtNanos) {
-        if (!isRendering.compareAndSet(false, true)) return;
-        long renderStartNs = System.nanoTime();
-
+    private void renderFrame() {
         try {
             if (offW <= 0 || offH <= 0) return;
 
@@ -582,209 +471,150 @@ public class AnimatedBackgroundView extends View {
 
             c.drawColor(baseColor);
 
-            float dt = dtNanos / 1_000_000_000f;
+            long nowNanos = System.nanoTime();
+            long dtNanos = lastRenderTimeNanos == 0 ? 16_666_667L : nowNanos - lastRenderTimeNanos;
+            lastRenderTimeNanos = nowNanos;
+            float dt = Math.min(dtNanos, 50_000_000L) / 1_000_000_000f;
             float time = (SystemClock.elapsedRealtime() - startTimeMs) / 1000f;
             float frameScale = dt * 60f;
 
-            // Defines the "safe zone" for blobs. If they go outside -0.3 to 1.3, we pull them back.
-            // This prevents them from flying off into nothingness.
             float safeMin = -0.3f;
             float safeMax = 1.3f;
 
-            // Standard target speed. We use this to normalize velocity so blobs don't stop.
             float targetSpeed = 0.0025f * animationSpeedMultiplier;
 
             for (int i = 0; i < blobs.size(); i++) {
                 Blob b = blobs.get(i);
 
-                // 1. Organic Steering
-                // Randomly adjust velocity direction slightly every frame.
-                // This creates a "wandering" effect rather than linear bouncing.
                 b.vx += (random.nextFloat() - 0.5f) * 0.0005f * frameScale;
                 b.vy += (random.nextFloat() - 0.5f) * 0.0005f * frameScale;
 
-                // 2. Soft Boundaries (The Gravity Pull)
-                // Instead of hard bouncing, if a blob is too far out, gently accelerate it towards the center.
-                // This ensures they always return to the screen.
                 if (b.x < safeMin) b.vx += 0.0002f * frameScale;
                 else if (b.x > safeMax) b.vx -= 0.0002f * frameScale;
 
                 if (b.y < safeMin) b.vy += 0.0002f * frameScale;
                 else if (b.y > safeMax) b.vy -= 0.0002f * frameScale;
 
-                // 3. Normalize Speed
-                // Ensure the blob doesn't get too fast or completely stop.
-                float currentSpeed = (float) Math.hypot(b.vx, b.vy);
+                float currentSpeed = (float) Math.sqrt(b.vx * b.vx + b.vy * b.vy);
                 if (currentSpeed > 0.00001f) {
-                    // Smoothly adjust current speed towards target speed
                     float newSpeed = currentSpeed * 0.95f + targetSpeed * 0.05f;
                     float scale = newSpeed / currentSpeed;
                     b.vx *= scale;
                     b.vy *= scale;
                 }
 
-                // 4. Update Position
                 b.x += b.vx * frameScale;
                 b.y += b.vy * frameScale;
 
                 float drawX = b.x * offW;
                 float drawY = b.y * offH;
 
-                float breathe = (float) Math.sin(
-                        time * (0.5f * breathingFrequency + (i % 4) * 0.1f) + i
-                ) * 0.08f;
+                float breathe = (float) Math.sin(time * (0.5f * breathingFrequency + (i % 4) * 0.1f) + i) * 0.08f;
                 float radiusPx = (b.radius + breathe) * Math.max(offW, offH);
 
-                int cOp = b.color;
-                int cTrans = cOp & 0x00FFFFFF;
-
-                RadialGradient shader = new RadialGradient(
-                        drawX, drawY, radiusPx,
-                        new int[]{cOp, cTrans},
-                        null,
-                        Shader.TileMode.CLAMP
-                );
-
-                blobPaint.setShader(shader);
-                blobPaint.setAlpha(190);
+                shaderMatrix.setScale(radiusPx, radiusPx);
+                shaderMatrix.postTranslate(drawX, drawY);
+                b.shader.setLocalMatrix(shaderMatrix);
+                blobPaint.setShader(b.shader);
                 c.drawCircle(drawX, drawY, radiusPx, blobPaint);
             }
 
-            fastBoxBlurOpaque(buffer, BLUR_RADIUS, BLUR_PASSES);
+            if (blurBufA != null && blurBufA.length >= offW * offH) {
+                buffer.getPixels(blurBufA, 0, offW, 0, 0, offW, offH);
+                int diameter = BLUR_RADIUS * 2 + 1;
+                for (int y = 0; y < offH; y++) {
+                    int red = 0;
+                    int green = 0;
+                    int blue = 0;
+                    int rowStart = y * offW;
+                    for (int x = -BLUR_RADIUS; x <= BLUR_RADIUS; x++) {
+                        int color = blurBufA[rowStart + clamp(x, 0, offW - 1)];
+                        red += (color >> 16) & 0xFF;
+                        green += (color >> 8) & 0xFF;
+                        blue += color & 0xFF;
+                    }
+                    for (int x = 0; x < offW; x++) {
+                        blurBufB[rowStart + x] = 0xFF000000
+                                | ((red / diameter) << 16)
+                                | ((green / diameter) << 8)
+                                | (blue / diameter);
+                        int outgoing = blurBufA[rowStart + blurOutgoingX[x]];
+                        int incoming = blurBufA[rowStart + blurIncomingX[x]];
+                        red += ((incoming >> 16) & 0xFF) - ((outgoing >> 16) & 0xFF);
+                        green += ((incoming >> 8) & 0xFF) - ((outgoing >> 8) & 0xFF);
+                        blue += (incoming & 0xFF) - (outgoing & 0xFF);
+                    }
+                }
+                for (int x = 0; x < offW; x++) {
+                    int red = 0;
+                    int green = 0;
+                    int blue = 0;
+                    for (int y = -BLUR_RADIUS; y <= BLUR_RADIUS; y++) {
+                        int color = blurBufB[clamp(y, 0, offH - 1) * offW + x];
+                        red += (color >> 16) & 0xFF;
+                        green += (color >> 8) & 0xFF;
+                        blue += color & 0xFF;
+                    }
+                    for (int y = 0; y < offH; y++) {
+                        blurBufA[y * offW + x] = 0xFF000000
+                                | ((red / diameter) << 16)
+                                | ((green / diameter) << 8)
+                                | (blue / diameter);
+                        int outgoing = blurBufB[blurOutgoingY[y] + x];
+                        int incoming = blurBufB[blurIncomingY[y] + x];
+                        red += ((incoming >> 16) & 0xFF) - ((outgoing >> 16) & 0xFF);
+                        green += ((incoming >> 8) & 0xFF) - ((outgoing >> 8) & 0xFF);
+                        blue += (incoming & 0xFF) - (outgoing & 0xFF);
+                    }
+                }
+                buffer.setPixels(blurBufA, 0, offW, 0, 0, offW, offH);
+            }
 
             synchronized (lock) {
                 renderedBitmap = buffer;
                 renderHeadIndex = index;
             }
 
-            long renderEndNs = System.nanoTime();
-            updateRenderMetrics((renderEndNs - renderStartNs) / 1_000_000f);
-
             mainHandler.post(this::postInvalidateOnAnimation);
         } finally {
-            isRendering.set(false);
+            renderScheduled.set(false);
         }
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        Bitmap current, prev;
-        long tStart;
+        drawBounds.set(0, 0, getWidth(), getHeight());
         synchronized (lock) {
-            current = renderedBitmap;
-            prev = previousBitmap;
-            tStart = transitionStartMs;
-        }
-
-        if (current == null || current.isRecycled()) {
-            canvas.drawColor(baseColor);
-            if (debugOverlayEnabled) drawDebugOverlay(canvas);
-            return;
-        }
-
-        Rect dst = new Rect(0, 0, getWidth(), getHeight());
-
-        if (isTransitioning && prev != null && !prev.isRecycled()) {
-            float p = Math.min(
-                    (SystemClock.elapsedRealtime() - tStart) / (float) TRANSITION_DURATION_MS,
-                    1f
-            );
-            drawPaint.setAlpha((int) ((1f - p) * 255));
-            canvas.drawBitmap(prev, null, dst, drawPaint);
-            drawPaint.setAlpha((int) (p * 255));
-            canvas.drawBitmap(current, null, dst, drawPaint);
-            if (p >= 1f) {
-                isTransitioning = false;
-                synchronized (lock) {
+            if (renderedBitmap == null || renderedBitmap.isRecycled()) {
+                canvas.drawColor(baseColor);
+                return;
+            }
+            if (isTransitioning && previousBitmap != null && !previousBitmap.isRecycled()) {
+                float progress = Math.min(
+                        (SystemClock.elapsedRealtime() - transitionStartMs) / (float) TRANSITION_DURATION_MS,
+                        1f
+                );
+                drawPaint.setAlpha((int) ((1f - progress) * 255));
+                canvas.drawBitmap(previousBitmap, null, drawBounds, drawPaint);
+                drawPaint.setAlpha((int) (progress * 255));
+                canvas.drawBitmap(renderedBitmap, null, drawBounds, drawPaint);
+                if (progress >= 1f) {
+                    previousBitmap.recycle();
                     previousBitmap = null;
+                    isTransitioning = false;
                 }
-            }
-        } else {
-            drawPaint.setAlpha(255);
-            canvas.drawBitmap(current, null, dst, drawPaint);
-        }
-
-        if (debugOverlayEnabled) {
-            drawDebugOverlay(canvas);
-        }
-    }
-
-    // === HELPERS ===
-
-    private int calculateAverageColor(Bitmap b) {
-        long r = 0, g = 0, blue = 0, count = 0;
-        int w = b.getWidth(), h = b.getHeight();
-        for (int x = 0; x < w; x += 10) {
-            for (int y = 0; y < h; y += 10) {
-                int c = b.getPixel(x, y);
-                r += Color.red(c);
-                g += Color.green(c);
-                blue += Color.blue(c);
-                count++;
-            }
-        }
-        if (count == 0) return 0xFF101010;
-        return Color.rgb((int) (r / count), (int) (g / count), (int) (blue / count));
-    }
-
-    private void fastBoxBlurOpaque(Bitmap srcDst, int radius, int passes) {
-        if (blurBufA == null || blurBufA.length < offW * offH) return;
-        srcDst.getPixels(blurBufA, 0, offW, 0, 0, offW, offH);
-        for (int i = 0; i < passes; i++) {
-            boxBlurHorizontal(blurBufA, blurBufB, offW, offH, radius);
-            boxBlurVertical(blurBufB, blurBufA, offW, offH, radius);
-        }
-        srcDst.setPixels(blurBufA, 0, offW, 0, 0, offW, offH);
-    }
-
-    private static void boxBlurHorizontal(int[] src, int[] dst, int w, int h, int r) {
-        final int div = r * 2 + 1;
-        for (int y = 0; y < h; y++) {
-            int tr = 0, tg = 0, tb = 0;
-            int yi = y * w;
-            for (int x = -r; x <= r; x++) {
-                int c = src[yi + clamp(x, 0, w - 1)];
-                tr += (c >> 16) & 0xFF;
-                tg += (c >> 8) & 0xFF;
-                tb += (c & 0xFF);
-            }
-            for (int x = 0; x < w; x++) {
-                dst[yi + x] = 0xFF000000
-                        | ((tr / div) << 16)
-                        | ((tg / div) << 8)
-                        | (tb / div);
-                int cOut = src[yi + clamp(x - r, 0, w - 1)];
-                int cIn = src[yi + clamp(x + r + 1, 0, w - 1)];
-                tr += (((cIn >> 16) & 0xFF) - ((cOut >> 16) & 0xFF));
-                tg += (((cIn >> 8) & 0xFF) - ((cOut >> 8) & 0xFF));
-                tb += (((cIn) & 0xFF) - ((cOut) & 0xFF));
+            } else {
+                drawPaint.setAlpha(255);
+                canvas.drawBitmap(renderedBitmap, null, drawBounds, drawPaint);
             }
         }
     }
 
-    private static void boxBlurVertical(int[] src, int[] dst, int w, int h, int r) {
-        final int div = r * 2 + 1;
-        for (int x = 0; x < w; x++) {
-            int tr = 0, tg = 0, tb = 0;
-            for (int y = -r; y <= r; y++) {
-                int c = src[clamp(y, 0, h - 1) * w + x];
-                tr += (c >> 16) & 0xFF;
-                tg += (c >> 8) & 0xFF;
-                tb += (c & 0xFF);
-            }
-            for (int y = 0; y < h; y++) {
-                dst[y * w + x] = 0xFF000000
-                        | ((tr / div) << 16)
-                        | ((tg / div) << 8)
-                        | (tb / div);
-                int cOut = src[clamp(y - r, 0, h - 1) * w + x];
-                int cIn = src[clamp(y + r + 1, 0, h - 1) * w + x];
-                tr += (((cIn >> 16) & 0xFF) - ((cOut >> 16) & 0xFF));
-                tg += (((cIn >> 8) & 0xFF) - ((cOut >> 8) & 0xFF));
-                tb += (((cIn) & 0xFF) - ((cOut) & 0xFF));
-            }
-        }
+    private static Bitmap createThumbnail(Bitmap bitmap) {
+        if (bitmap == null) return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, 100, 100, true);
+        return scaled == bitmap ? bitmap.copy(Bitmap.Config.ARGB_8888, false) : scaled;
     }
 
     private static int clamp(int v, int lo, int hi) {
@@ -797,94 +627,17 @@ public class AnimatedBackgroundView extends View {
         return v;
     }
 
-    private boolean debugOverlayEnabled = false;
-
-    private float uiFps = 0f;
-    private float renderFps = 0f;
-    private float avgRenderMs = 0f;
-    private float worstRenderMs = 0f;
-    private int jankyUiFrames = 0;
-    private int totalUiFrames = 0;
-    private long lastMetricsSecondMs = 0;
-    private int renderCountThisSecond = 0;
-    private final Paint overlayTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint overlayBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-    private void drawDebugOverlay(Canvas canvas) {
-        String line1 = String.format("UI %.1f fps", uiFps);
-        String line2 = String.format("BG %.1f fps", renderFps);
-        String line3 = String.format("Render %.2f ms", avgRenderMs);
-        String line4 = String.format("Jank %.1f%%", getUiJankPercent());
-
-        float pad = dp(8);
-        float lineH = dp(14);
-        float boxW = dp(120);
-        float boxH = pad * 2 + lineH * 4;
-        float margin = dp(8);
-
-        float right = canvas.getWidth() - margin;
-        float bottom = canvas.getHeight() - margin;
-        float left = right - boxW;
-        float top = bottom - boxH;
-
-        canvas.drawRoundRect(left, top, right, bottom, dp(10), dp(10), overlayBgPaint);
-
-        float tx = left + pad;
-        float ty = top + pad + lineH - dp(2);
-
-        canvas.drawText(line1, tx, ty, overlayTextPaint);
-        canvas.drawText(line2, tx, ty + lineH, overlayTextPaint);
-        canvas.drawText(line3, tx, ty + lineH * 2, overlayTextPaint);
-        canvas.drawText(line4, tx, ty + lineH * 3, overlayTextPaint);
-    }
-
-    private void updateUiMetrics(long dtNs) {
-        if (dtNs <= 0) return;
-
-        float instantFps = 1_000_000_000f / dtNs;
-        uiFps = (uiFps == 0f) ? instantFps : (uiFps * 0.9f + instantFps * 0.1f);
-
-        totalUiFrames++;
-        if (dtNs > 20_000_000L) { // >20ms
-            jankyUiFrames++;
-        }
-    }
-
-    private void updateRenderMetrics(float renderMs) {
-        avgRenderMs = (avgRenderMs == 0f) ? renderMs : (avgRenderMs * 0.9f + renderMs * 0.1f);
-        if (renderMs > worstRenderMs) worstRenderMs = renderMs;
-
-        renderCountThisSecond++;
-
-        long nowMs = SystemClock.elapsedRealtime();
-        long dt = nowMs - lastMetricsSecondMs;
-        if (dt >= 1000L) {
-            renderFps = renderCountThisSecond * (1000f / dt);
-            renderCountThisSecond = 0;
-            lastMetricsSecondMs = nowMs;
-        }
-    }
-
-    private float dp(float v) {
-        return v * getResources().getDisplayMetrics().density;
-    }
-
-    public float getUiJankPercent() {
-        if (totalUiFrames == 0) return 0f;
-        return (jankyUiFrames * 100f) / totalUiFrames;
-    }
-
     private static class Blob {
         float x, y, vx, vy, radius;
-        int color;
+        final RadialGradient shader;
 
         Blob(float x, float y, float r, int c, float vx, float vy) {
             this.x = x;
             this.y = y;
             radius = r;
-            color = c;
             this.vx = vx;
             this.vy = vy;
+            shader = new RadialGradient(0f, 0f, 1f, new int[]{c, c & 0x00FFFFFF}, null, Shader.TileMode.CLAMP);
         }
     }
 }

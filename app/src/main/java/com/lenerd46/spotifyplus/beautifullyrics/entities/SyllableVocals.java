@@ -108,6 +108,8 @@ public class SyllableVocals implements SyncableVocals {
                 List<AnimatedLetter> letters = new ArrayList<>();
                 LinearLayout emphasisGroup = new LinearLayout(activity);
                 emphasisGroup.setOrientation(LinearLayout.HORIZONTAL);
+                emphasisGroup.setClipToPadding(false);
+                emphasisGroup.setClipChildren(false);
 
                 if(!syllableMetadata.isPartOfWord) {
                     if(!isEmphasized) {
@@ -158,7 +160,12 @@ public class SyllableVocals implements SyncableVocals {
                     }
                 } else {
                     if(!isEmphasized) {
-                        if(wordGroup == null) { wordGroup = new LinearLayout(activity); wordGroup.setOrientation(LinearLayout.HORIZONTAL); }
+                        if(wordGroup == null) {
+                            wordGroup = new LinearLayout(activity);
+                            wordGroup.setOrientation(LinearLayout.HORIZONTAL);
+                            wordGroup.setClipToPadding(false);
+                            wordGroup.setClipChildren(false);
+                        }
 
                         if(isBackground) { backgroundEmphasizedLyricLabelStyle(textView); } else { emphasizedLyricLabelStyle(textView); }
                         textView.setText(isRomanized ? syllableMetadata.romanizedText : syllableMetadata.text);
@@ -185,7 +192,12 @@ public class SyllableVocals implements SyncableVocals {
                             relativeTimestamp += relativeTimestep;
                         }
 
-                        if(wordGroup == null) { wordGroup = new LinearLayout(activity); wordGroup.setOrientation(LinearLayout.HORIZONTAL); }
+                        if(wordGroup == null) {
+                            wordGroup = new LinearLayout(activity);
+                            wordGroup.setOrientation(LinearLayout.HORIZONTAL);
+                            wordGroup.setClipToPadding(false);
+                            wordGroup.setClipChildren(false);
+                        }
                         wordGroup.addView(emphasisGroup);
                     }
                 }

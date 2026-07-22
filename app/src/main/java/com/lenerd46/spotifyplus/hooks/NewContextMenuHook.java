@@ -49,6 +49,8 @@ public class NewContextMenuHook extends SpotifyHook {
 
     private static final ThreadLocal<Integer> spotifyPlusRenderDepth = ThreadLocal.withInitial(() -> 0);
     private static volatile Object cachedSpotifyPlusTrf = null;
+    private static final Map<Object, NextUpAction> nextUpActions = Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Set<Class<?>> nextUpClickHookClasses = Collections.synchronizedSet(new HashSet<>());
 
     private static Class<?> interfaceClass;
 
@@ -219,7 +221,7 @@ public class NewContextMenuHook extends SpotifyHook {
                         List<?> list = (List<?>) param.args[1];
                         if (list == null) return;
 
-                        if (cachedOriginalViewModel == null && list.size() >= 3) {
+                        if (cachedOriginalViewModel == null && list.size() >= 4) {
                             Object probablyAddToPlaylist = list.get(3);
                             cachedOriginalViewModel = probablyAddToPlaylist.getClass().getMethod("getViewModel").invoke(probablyAddToPlaylist);
 
@@ -234,21 +236,39 @@ public class NewContextMenuHook extends SpotifyHook {
 //                            }
                         }
 
-                        if (list.stream().anyMatch(item -> {
+                        boolean hasLastFmItem = list.stream().anyMatch(item -> {
                             if (item == null || item.getClass() != radioButtonClass) return false;
                             Object markerValue = XposedHelpers.getObjectField(item, "c");
                             return markerValue.equals("spotifyplus_open_last_fm");
-                        })) return;
+                        });
 
-                        Context context = AndroidAppHelper.currentApplication();
-                        if (context == null) return;
+                        ArrayList<Object> newList = new ArrayList<>(list);
+                        boolean changed = false;
 
-                        Object radioButton = XposedHelpers.newInstance(radioButtonClass, context, "spotifyplus_open_last_fm");
+                        if (!hasMenuItem(list, "queue_play_next_track")) {
+                            Object addToQueueItem = findMenuItem(list, "queue_track");
+                            if (getSingleTrackUri(addToQueueItem) != null) {
+                                Object playNextItem = createPlayNextTrackItem(addToQueueItem);
+                                if (playNextItem != null) {
+                                    int addToQueueIndex = newList.indexOf(addToQueueItem);
+                                    newList.add(Math.max(0, addToQueueIndex), playNextItem);
+                                    changed = true;
+                                }
+                            }
+                        }
 
-                        ArrayList<Object> newList = new ArrayList<>(list.size() + 1);
-                        newList.add(radioButton);
-                        newList.addAll(list);
-                        param.args[1] = newList;
+                        if (!hasLastFmItem) {
+                            Context context = AndroidAppHelper.currentApplication();
+                            if (context != null) {
+                                Object radioButton = XposedHelpers.newInstance(radioButtonClass, context, "spotifyplus_open_last_fm");
+                                newList.add(0, radioButton);
+                                changed = true;
+                            }
+                        }
+
+                        if (changed) {
+                            param.args[1] = newList;
+                        }
                     } catch (Exception e) {
                         XposedBridge.log(e);
                     }
@@ -472,6 +492,268 @@ public class NewContextMenuHook extends SpotifyHook {
             return "spotifyplus_open_last_fm".equals(key);
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    private Object findMenuItem(List<?> items, String id) {
+        if (items == null) return null;
+
+        for (Object item : items) {
+            if (id.equals(getMenuItemId(item))) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasMenuItem(List<?> items, String id) {
+        return findMenuItem(items, id) != null;
+    }
+
+    private String getMenuItemId(Object item) {
+        if (item == null) return null;
+
+        try {
+            Object viewModel = item.getClass().getMethod("getViewModel").invoke(item);
+            Object id = XposedHelpers.getObjectField(viewModel, "a");
+            return id instanceof String ? (String) id : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private String getSingleTrackUri(Object addToQueueItem) {
+        if (addToQueueItem == null) return null;
+
+        try {
+            Object value = getField(addToQueueItem, List.class);
+            if (!(value instanceof List)) return null;
+
+            List<?> tracks = (List<?>) value;
+            if (tracks.size() != 1 || tracks.get(0) == null) return null;
+
+            Object uriValue = tracks.get(0).getClass().getMethod("uri").invoke(tracks.get(0));
+            if (!(uriValue instanceof String)) return null;
+
+            String uri = (String) uriValue;
+            return uri.startsWith("spotify:track:") ? uri : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Object createPlayNextTrackItem(Object addToQueueItem) {
+        if (addToQueueItem == null) return null;
+
+        for (Constructor<?> ctor : addToQueueItem.getClass().getDeclaredConstructors()) {
+            if (ctor.getParameterCount() != 4) continue;
+
+            try {
+                Class<?>[] parameterTypes = ctor.getParameterTypes();
+                Object[] args = new Object[parameterTypes.length];
+                boolean complete = true;
+
+                for (int i = 0; i < parameterTypes.length; i++) {
+                    args[i] = getField(addToQueueItem, parameterTypes[i]);
+                    if (args[i] == null) {
+                        complete = false;
+                        break;
+                    }
+                }
+
+                if (!complete) continue;
+
+                ctor.setAccessible(true);
+                Object candidate = ctor.newInstance(args);
+                if ("queue_play_next_track".equals(getMenuItemId(candidate))) {
+                    NextUpAction action = createNextUpAction(args[0], candidate);
+                    if (action != null) {
+                        installNextUpClickHook(candidate.getClass());
+                        nextUpActions.put(candidate, action);
+                        return candidate;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return null;
+    }
+
+    private NextUpAction createNextUpAction(Object queueItemHelper, Object item) {
+        try {
+            Object value = getField(item, List.class);
+            if (!(value instanceof List)) return null;
+
+            List<?> tracks = (List<?>) value;
+            if (tracks.size() != 1 || tracks.get(0) == null) return null;
+
+            Object queueUseCase = XposedHelpers.getObjectField(queueItemHelper, "a");
+            Object queueApi = XposedHelpers.getObjectField(queueUseCase, "f");
+            Object queueStream = XposedHelpers.getObjectField(queueApi, "c");
+            return new NextUpAction(queueApi, queueStream, tracks.get(0));
+        } catch (Throwable t) {
+            XposedBridge.log("[SpotifyPlus] Failed resolving the Next Up queue action: " + t);
+            return null;
+        }
+    }
+
+    private void installNextUpClickHook(Class<?> itemClass) {
+        synchronized (nextUpClickHookClasses) {
+            if (nextUpClickHookClasses.contains(itemClass)) return;
+
+            XposedBridge.hookAllMethods(itemClass, "onItemClicked", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    NextUpAction action = nextUpActions.get(param.thisObject);
+                    if (action == null) return;
+
+                    param.setResult(null);
+                    insertAtTopOfNextUp(action);
+                }
+            });
+            nextUpClickHookClasses.add(itemClass);
+        }
+    }
+
+    private void insertAtTopOfNextUp(NextUpAction action) {
+        try {
+            Object queueSingle = XposedHelpers.callMethod(action.queueStream, "A");
+            Object onQueue = newRxConsumer(queue -> {
+                try {
+                    List<?> currentNextTracks = (List<?>) XposedHelpers.callMethod(queue, "nextTracks");
+                    List<?> currentPrevTracks = (List<?>) XposedHelpers.callMethod(queue, "prevTracks");
+                    String revision = (String) XposedHelpers.callMethod(queue, "revision");
+
+                    ArrayList<Object> nextTracks = new ArrayList<>(currentNextTracks);
+                    int nextUpStart = 0;
+                    while (nextUpStart < nextTracks.size() && isQueuedTrack(nextTracks.get(nextUpStart))) {
+                        nextUpStart++;
+                    }
+                    Object nextUpTrack = withoutQueuedFlag(action.track);
+                    if (nextUpTrack == null) {
+                        throw new IllegalStateException("Could not create an unqueued ContextTrack");
+                    }
+                    nextTracks.add(nextUpStart, nextUpTrack);
+
+                    Class<?> setQueueCommandClass = XposedHelpers.findClass(
+                            "com.spotify.player.model.command.SetQueueCommand",
+                            lpparm.classLoader
+                    );
+                    Object command = XposedHelpers.callStaticMethod(
+                            setQueueCommandClass,
+                            "create",
+                            revision,
+                            nextTracks,
+                            new ArrayList<>(currentPrevTracks)
+                    );
+                    Object updateSingle = invokeSingleArgumentMethod(action.queueApi, command);
+                    XposedHelpers.callMethod(
+                            updateSingle,
+                            "subscribe",
+                            newRxConsumer(ignored -> { }),
+                            newRxConsumer(this::logNextUpError)
+                    );
+                } catch (Throwable t) {
+                    logNextUpError(t);
+                }
+            });
+
+            XposedHelpers.callMethod(
+                    queueSingle,
+                    "subscribe",
+                    onQueue,
+                    newRxConsumer(this::logNextUpError)
+            );
+        } catch (Throwable t) {
+            logNextUpError(t);
+        }
+    }
+
+    private Object withoutQueuedFlag(Object track) {
+        try {
+            Object metadataValue = XposedHelpers.callMethod(track, "metadata");
+            if (!(metadataValue instanceof Map)) return null;
+
+            HashMap<Object, Object> metadata = new HashMap<>((Map<?, ?>) metadataValue);
+            metadata.remove("is_queued");
+
+            Object builder = XposedHelpers.callMethod(track, "toBuilder");
+            XposedHelpers.callMethod(builder, "metadata", metadata);
+            return XposedHelpers.callMethod(builder, "build");
+        } catch (Throwable t) {
+            XposedBridge.log("[SpotifyPlus] Failed clearing is_queued from Next Up track: " + t);
+            return null;
+        }
+    }
+
+    private boolean isQueuedTrack(Object track) {
+        try {
+            Object metadataValue = XposedHelpers.callMethod(track, "metadata");
+            if (!(metadataValue instanceof Map)) return false;
+            return Boolean.parseBoolean(String.valueOf(((Map<?, ?>) metadataValue).get("is_queued")));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private Object invokeSingleArgumentMethod(Object receiver, Object argument) throws Exception {
+        Class<?> type = receiver.getClass();
+        while (type != null && type != Object.class) {
+            for (Method method : type.getDeclaredMethods()) {
+                Class<?>[] parameterTypes = method.getParameterTypes();
+                if (parameterTypes.length == 1 && parameterTypes[0].isInstance(argument)) {
+                    method.setAccessible(true);
+                    return method.invoke(receiver, argument);
+                }
+            }
+            type = type.getSuperclass();
+        }
+        throw new NoSuchMethodException("No queue method accepts " + argument.getClass().getName());
+    }
+
+    private Object newRxConsumer(java.util.function.Consumer<Object> callback) {
+        Class<?> consumerClass = XposedHelpers.findClass(
+                "io.reactivex.rxjava3.functions.Consumer",
+                lpparm.classLoader
+        );
+        return java.lang.reflect.Proxy.newProxyInstance(
+                lpparm.classLoader,
+                new Class<?>[]{consumerClass},
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "accept":
+                            callback.accept(args[0]);
+                            return null;
+                        case "hashCode":
+                            return System.identityHashCode(proxy);
+                        case "equals":
+                            return proxy == args[0];
+                        case "toString":
+                            return "SpotifyPlusRxConsumer";
+                        default:
+                            return null;
+                    }
+                }
+        );
+    }
+
+    private void logNextUpError(Object error) {
+        XposedBridge.log("[SpotifyPlus] Failed adding track to Next Up: " + error);
+        if (error instanceof Throwable) {
+            XposedBridge.log((Throwable) error);
+        }
+    }
+
+    private static final class NextUpAction {
+        final Object queueApi;
+        final Object queueStream;
+        final Object track;
+
+        NextUpAction(Object queueApi, Object queueStream, Object track) {
+            this.queueApi = queueApi;
+            this.queueStream = queueStream;
+            this.track = track;
         }
     }
 

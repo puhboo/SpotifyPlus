@@ -92,22 +92,25 @@ public class SleepTimerHook extends SpotifyHook {
 //                addTimer(list, 45, minutes);
 //                addTimer(list, 1, hours);
 
+                // Add the custom button
                 Object addCustomTime = XposedHelpers.newInstance(XposedHelpers.findClass("p.n8p0", lpparm.classLoader), customDuration);
                 XposedHelpers.callMethod(list, "add", addCustomTime);
 
+                // This is the end of track option
                 Object o8p0 = XposedHelpers.newInstance(XposedHelpers.findClass("p.o8p0", lpparm.classLoader), selectedTimer);
                 XposedHelpers.callMethod(list, "add", o8p0);
 
+                // Check if there is a timer selected
                 Object f7p0 = XposedHelpers.getObjectField(w7p0, "b");
                 boolean shouldAddExtra = (boolean) XposedHelpers.callMethod(f7p0, "d");
 
                 if (shouldAddExtra) {
+                    // Add the option to turn it off
                     Object m8p0a = XposedHelpers.getStaticObjectField(XposedHelpers.findClass("p.m8p0", lpparm.classLoader), "a");
                     XposedHelpers.callMethod(list, "add", m8p0a);
                 }
 
                 Object finalList = XposedHelpers.callStaticMethod(XposedHelpers.findClass("p.e1c", lpparm.classLoader), "h", list);
-
                 return XposedHelpers.newInstance(XposedHelpers.findClass("p.v7p0", lpparm.classLoader), title, selectedTimer, thirdArg, finalList);
             }
         });
@@ -124,7 +127,6 @@ public class SleepTimerHook extends SpotifyHook {
                 Object qud = param.args[1];
 
                 XposedHelpers.callStaticMethod(XposedHelpers.findClass("p.b001", lpparm.classLoader), "c", "Enter custom amount", null, null, 0L, null, null, 0, false, XposedHelpers.newInstance(XposedHelpers.findClass("p.an00", lpparm.classLoader), 1), 0, null, qud, 0, 0, 1790);
-
                 param.setResult(XposedHelpers.getStaticObjectField(XposedHelpers.findClass("p.fev0", lpparm.classLoader), "a"));
             }
         });
