@@ -52,9 +52,11 @@
 
             <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="64dp"
+                    android:layout_height="86dp"
                     android:orientation="horizontal"
                     android:gravity="center_vertical"
+                    android:layout_marginBottom="8dp"
+                    android:clickable="true" android:focusable="true"
                     android:background="@drawable/row_click_bg">
 
                 <LinearLayout
@@ -68,21 +70,37 @@
                             android:layout_height="wrap_content"
                             android:text="Enabled"
                             android:textColor="@color/white"
-                            android:textSize="15sp"/>
+                            android:textSize="15sp"
+                            android:paddingBottom="4dp"
+                    />
 
                     <TextView
+                            style="@style/TextAppearance.Material3.BodySmall"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="3dp"
                             android:text="Apply the custom Spotify theme"
-                            android:textColor="?attr/colorOnSurfaceVariant"
-                            android:textSize="12sp"/>
+                            android:textColor="?attr/colorOnSurfaceVariant"/>
+
+                    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" >
+
+                        <ImageView android:layout_width="16dp" android:layout_height="16dp" android:layout_gravity="center"
+                                   android:src="@drawable/info"/>
+
+                        <TextView
+                                style="@style/TextAppearance.Material3.BodySmall"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="This feature is still in beta and is not guaranteed to work!"
+                                android:textAlignment="viewStart"
+                                android:textColor="#FFFFFFFF" android:layout_marginHorizontal="8dp"/>
+                    </LinearLayout>
                 </LinearLayout>
 
                 <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/switch_theme_enabled"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:paddingEnd="8dp"
                         android:checked="true"
                         android:contentDescription="Enable custom theme"/>
             </LinearLayout>

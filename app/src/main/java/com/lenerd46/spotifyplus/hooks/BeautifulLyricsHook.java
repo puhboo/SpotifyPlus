@@ -155,6 +155,11 @@ public class BeautifulLyricsHook extends SpotifyHook {
         return hook != null && hook.overlayHost != null && hook.overlayActivity == activity && !hook.dismissing;
     }
 
+    public static boolean isOverlayAttached(Activity activity) {
+        BeautifulLyricsHook hook = instance;
+        return hook != null && hook.overlayHost != null && hook.overlayActivity == activity;
+    }
+
     @Override
     protected void hook() {
         instance = this;
@@ -446,7 +451,7 @@ public class BeautifulLyricsHook extends SpotifyHook {
         fadeWrapper.setClipToPadding(false);
         overlayLyricsContainer = new LinearLayout(activity);
         overlayLyricsContainer.setOrientation(LinearLayout.VERTICAL);
-        if (prefs.getBoolean("experiment_scroll", false)) {
+        if (prefs.getBoolean("experiment_scroll", true)) {
             overlayLyricsContainer.setLayoutParams(new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dpToPx(40000, activity)));
             overlayLyricsContainer.setClipChildren(true);
             overlayLyricsContainer.setClipToPadding(false);
@@ -1269,7 +1274,7 @@ public class BeautifulLyricsHook extends SpotifyHook {
         List<View> lines = new ArrayList<>();
         vocalGroups = new HashMap<>();
         SharedPreferences prefs = activity.getSharedPreferences("SpotifyPlus", Context.MODE_PRIVATE);
-        boolean newScrollingSystem = prefs.getBoolean("experiment_scroll", false);
+        boolean newScrollingSystem = prefs.getBoolean("experiment_scroll", true);
         currentLineSpacingMode = prefs.getString("line_spacing", "default");
 
         int lineSpacing;
@@ -1567,7 +1572,7 @@ public class BeautifulLyricsHook extends SpotifyHook {
         Gson gson = new Gson();
 
         SharedPreferences prefs = activity.getSharedPreferences("SpotifyPlus", Context.MODE_PRIVATE);
-        boolean newScrollingSystem = prefs.getBoolean("experiment_scroll", false);
+        boolean newScrollingSystem = prefs.getBoolean("experiment_scroll", true);
 
         LineSyncedLyrics lyrics = transformedLyrics.lyrics.lineLyrics;
         int lineSpacing = getConfiguredLineSpacingDp(currentLineSpacingMode);

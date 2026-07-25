@@ -1,64 +1,74 @@
 package com.lenerd46.spotifyplus.hooks;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.WeakHashMap;
-
+import android.app.Activity;
+import android.app.Application;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
-import android.os.Build;
-import android.util.AttributeSet;
-import android.widget.FrameLayout;
-import android.widget.TextView;
 import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.GradientDrawable;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.ImageView;
-import android.widget.TextView;
-import android.content.res.ColorStateList;
-import android.graphics.Color;
 import android.os.Build;
-import android.app.Activity;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
+import android.util.AttributeSet;
 import android.util.LruCache;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.TextView;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
+import org.luckypray.dexkit.query.FindClass;
+import org.luckypray.dexkit.query.FindMethod;
+import org.luckypray.dexkit.query.enums.StringMatchType;
+import org.luckypray.dexkit.query.matchers.ClassMatcher;
+import org.luckypray.dexkit.query.matchers.MethodMatcher;
+import org.luckypray.dexkit.result.ClassData;
+import org.luckypray.dexkit.result.FieldData;
+import org.luckypray.dexkit.result.MethodData;
 
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import java.lang.ref.WeakReference;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-import de.robv.android.xposed.callbacks.XC_LayoutInflated;
-
-import java.util.Set;
-
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
-
 public class ThemeHook extends SpotifyHook {
 
-    private static final String TAG = "SpotifyPlus/ThemeHook: ";
     private final SharedPreferences prefs;
+    private final Context context;
     private static volatile boolean themeEnabled = true;
     private static volatile Long originalHomeFilterChipColor;
-
-    private volatile int lastArtworkColor;
+    private static volatile Field homeFilterChipColorField;
+    private static volatile Method composeDisposeMethod;
+    private static volatile Method composeCreateMethod;
+    private volatile Method creativeWorkGetViewMethod;
+    private volatile Object modernHomeFilterChipUnselectedStyle;
+    private volatile Field modernHomeFilterChipProviderField;
+    private volatile boolean modernHomeFilterChipProviderReplaced;
 
     public static volatile int BACKGROUND = 0xFF121212;
     public static volatile int BACKGROUND_HIGHLIGHT = 0xFF1F1F1F;
@@ -86,7 +96,6 @@ public class ThemeHook extends SpotifyHook {
     public static volatile int NEGATIVE = 0xFFED2C3F;
     public static volatile int WARNING = 0xFFFFA42B;
     public static volatile int POSITIVE = 0xFF1ED760;
-    public static final int WHITE = 0xFFFFFFFF;
     public static volatile int SCRIM = 0xFF000000;
     public static volatile int ON_ACCENT = Color.BLACK;
 
@@ -105,9 +114,8 @@ public class ThemeHook extends SpotifyHook {
 
     private static WeakReference<Activity> visibleActivity = new WeakReference<>(null);
 
-    private int testPaletteIndex = 0;
-
     public ThemeHook(Context context) {
+        this.context = context;
         prefs = context.getSharedPreferences("SpotifyPlus", Context.MODE_PRIVATE);
         if (prefs.getBoolean("theme_palette_saved", false)) loadCustomTheme(prefs);
         themeEnabled = prefs.getBoolean("theme_enabled", false);
@@ -181,32 +189,105 @@ public class ThemeHook extends SpotifyHook {
 
     private void hookEncorePalette() {
         try {
-            ClassLoader classLoader = lpparm.classLoader;
-            Class<?> composerClass = XposedHelpers.findClass("p.qud", classLoader);
+            Method paletteAccessor = findEncorePaletteAccessor();
+            XposedBridge.log("[SpotifyPlus] Encore palette accessor: " + paletteAccessor);
+            XposedBridge.hookMethod(paletteAccessor, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Object original = param.getResult();
+                    if (original == null) return;
 
-            XposedHelpers.findAndHookMethod("p.rjo", classLoader, "a", composerClass, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            Object original = param.getResult();
-                            if (original == null) {
-                                return;
-                            }
-
-                            try {
-                                param.setResult(recolorEncorePalette(original));
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(TAG + "Failed to recolor Encore palette");
-                                XposedBridge.log(throwable);
-                            }
-                        }
+                    try {
+                        param.setResult(recolorEncorePalette(original));
+                    } catch (Throwable throwable) {
+                        XposedBridge.log(throwable);
                     }
-            );
+                }
+            });
+            hookEncoreLayoutPalettes(paletteAccessor.getReturnType().getName());
 
-            XposedBridge.log(TAG + "Encore palette hook installed");
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not install Encore palette hook");
             XposedBridge.log(throwable);
         }
+    }
+
+    private void hookEncoreLayoutPalettes(String paletteClassName) {
+        try {
+            List<MethodData> layoutThemeMethods = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().returnType(void.class).paramCount(5).addUsingString("EncoreLayoutTheme: Invalid screen dimensions (", StringMatchType.Contains)));
+            if (layoutThemeMethods.size() != 1) {
+                if (!layoutThemeMethods.isEmpty()) XposedBridge.log("[SpotifyPlus] Could not uniquely identify the Encore layout-theme provider: " + layoutThemeMethods);
+                return;
+            }
+            List<String> layoutThemeParameters = layoutThemeMethods.get(0).getParamTypeNames();
+            if (layoutThemeParameters.size() < 3) return;
+            String composerClassName = layoutThemeParameters.get(2);
+            List<MethodData> paletteResolvers = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(paletteClassName).paramTypes("int", composerClassName)));
+            if (paletteResolvers.isEmpty()) return;
+            if (paletteResolvers.size() != 1) throw new IllegalStateException("Expected one Encore layout palette resolver for " + paletteClassName + " and " + composerClassName + ", found " + paletteResolvers);
+            MethodData paletteResolverData = paletteResolvers.get(0);
+            Method paletteResolver = paletteResolverData.getMethodInstance(lpparm.classLoader);
+            XposedBridge.log("[SpotifyPlus] Encore layout palette resolver: " + paletteResolver);
+            XposedBridge.hookMethod(paletteResolver, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Object original = param.getResult();
+                    if (original == null) return;
+                    try {
+                        param.setResult(recolorEncorePalette(original));
+                    } catch (Throwable throwable) {
+                        XposedBridge.log(throwable);
+                    }
+                }
+            });
+            hookEncorePaletteProviders(paletteResolverData, paletteClassName, composerClassName);
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
+    }
+
+    private void hookEncorePaletteProviders(MethodData paletteResolver, String paletteClassName, String composerClassName) throws Throwable {
+        ClassData providerClass = null;
+        String contentClassName = null;
+        for (MethodData caller : paletteResolver.getCallers()) {
+            List<String> parameters = caller.getParamTypeNames();
+            if (!"void".equals(caller.getReturnType().getName()) || parameters.size() != 4 || !"int".equals(parameters.get(0)) || !composerClassName.equals(parameters.get(2)) || !"int".equals(parameters.get(3))) continue;
+            if (providerClass != null && !providerClass.getName().equals(caller.getDeclaredClassName())) throw new IllegalStateException("Encore layout palette resolver has multiple provider classes: " + paletteResolver.getCallers());
+            providerClass = caller.getDeclaredClass();
+            contentClassName = parameters.get(1);
+        }
+        if (providerClass == null) return;
+        List<MethodData> paletteProviders = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(providerClass)).matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(void.class).paramTypes(paletteClassName, contentClassName, composerClassName, "int")));
+        if (paletteProviders.isEmpty()) throw new IllegalStateException("Could not find the Encore palette providers in " + providerClass.getName());
+        for (MethodData providerData : paletteProviders) {
+            Method provider = providerData.getMethodInstance(lpparm.classLoader);
+            XposedBridge.log("[SpotifyPlus] Encore palette provider: " + provider);
+            XposedBridge.hookMethod(provider, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object original = param.args[0];
+                    if (original == null) return;
+                    try {
+                        param.args[0] = recolorEncorePalette(original);
+                    } catch (Throwable throwable) {
+                        XposedBridge.log(throwable);
+                    }
+                }
+            });
+        }
+    }
+
+    private Method findEncorePaletteAccessor() throws Throwable {
+        Set<String> paletteClassNames = new HashSet<>();
+        var paletteInitializers = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().name("<clinit>").usingNumbers(4278190080L, 4294967295L, 4280229663L, 4279374354L, 4280887593L)));
+        for (MethodData initializer : paletteInitializers) {
+            for (MethodData invoked : initializer.getInvokes()) {
+                if (invoked.isConstructor() && invoked.getParamCount() == 4 && invoked.getDeclaredClass().getFieldCount() == 4) paletteClassNames.add(invoked.getClassName());
+            }
+        }
+        if (paletteClassNames.size() != 1) throw new IllegalStateException("Expected one Encore palette type, found " + paletteClassNames);
+        String paletteClassName = paletteClassNames.iterator().next();
+        ClassData accessorClass = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().fieldCount(1).methodCount(5).addMethod(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(paletteClassName).paramCount(1)))).single();
+        return bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(accessorClass)).matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(paletteClassName).paramCount(1))).single().getMethodInstance(lpparm.classLoader);
     }
 
     private Object recolorEncorePalette(Object original) {
@@ -217,56 +298,28 @@ public class ThemeHook extends SpotifyHook {
                 return cached;
             }
 
-            Object oldBackgrounds = XposedHelpers.getObjectField(original, "a");
-            int originalBase = unpackColor(XposedHelpers.getLongField(oldBackgrounds, "c"));
+            Object oldBackgrounds = getConstructorField(original, 0, 4);
+            int originalBase = findEncoreBaseColor(oldBackgrounds);
 
             final Object replacement;
 
             switch (originalBase) {
-                /*
-                 * Standard Encore Base palette.
-                 */
                 case 0xFF121212:
                     replacement = createLightEncorePalette(original, BACKGROUND, BACKGROUND_HIGHLIGHT, BACKGROUND_PRESS);
                     break;
 
-                /*
-                 * Encore Elevated palette. Spotify derives this from Base for
-                 * cards, dialogs, sheets, and elevated containers.
-                 */
                 case 0xFF1F1F1F:
-                    replacement = createLightEncorePalette(
-                            original,
-                            SURFACE,
-                            SURFACE_HIGHLIGHT,
-                            SURFACE_PRESS
-                    );
+                    replacement = createLightEncorePalette(original, SURFACE, SURFACE_HIGHLIGHT, SURFACE_PRESS);
                     break;
 
-                /*
-                 * Encore Tinted palette. The original value is 10% white.
-                 */
                 case 0x1AFFFFFF:
-                    replacement = createLightEncorePalette(
-                            original,
-                            TINTED,
-                            TINTED_HIGHLIGHT,
-                            TINTED_PRESS
-                    );
+                    replacement = createLightEncorePalette(original, TINTED, TINTED_HIGHLIGHT, TINTED_PRESS);
                     break;
 
-                /*
-                 * Spotify's green BrightAccent palette. This controls many
-                 * primary buttons and highlighted controls.
-                 */
                 case 0xFF1ED760:
                     replacement = createBlueAccentPalette(original);
                     break;
 
-                /*
-                 * Preserve Negative, Warning, Positive, Announcement,
-                 * OverMedia, and dynamic artwork palettes.
-                 */
                 default:
                     replacement = original;
                     break;
@@ -277,230 +330,86 @@ public class ThemeHook extends SpotifyHook {
         }
     }
 
-    private Object createLightEncorePalette(
-            Object original,
-            int mainBackground,
-            int mainHighlight,
-            int mainPress
-    ) {
-        Object oldBackgrounds =
-                XposedHelpers.getObjectField(original, "a");
-        Object oldElevated =
-                XposedHelpers.getObjectField(oldBackgrounds, "a");
-        Object oldTinted =
-                XposedHelpers.getObjectField(oldBackgrounds, "b");
+    private Object createLightEncorePalette(Object original, int mainBackground, int mainHighlight, int mainPress) {
+        Object oldBackgrounds = getConstructorField(original, 0, 4);
+        Object oldElevated = getConstructorField(oldBackgrounds, 0, 5);
+        Object oldText = getConstructorField(original, 1, 4);
+        Object oldEssential = getConstructorField(original, 2, 4);
+        Object oldDecorative = getConstructorField(original, 3, 4);
 
-        Object oldText =
-                XposedHelpers.getObjectField(original, "b");
-        Object oldEssential =
-                XposedHelpers.getObjectField(original, "c");
-        Object oldDecorative =
-                XposedHelpers.getObjectField(original, "d");
+        Object elevated = XposedHelpers.newInstance(oldElevated.getClass(), packColor(SURFACE), packColor(SURFACE_HIGHLIGHT), packColor(SURFACE_PRESS));
 
-        Object elevated = XposedHelpers.newInstance(
-                oldElevated.getClass(),
-                packColor(SURFACE),
-                packColor(SURFACE_HIGHLIGHT),
-                packColor(SURFACE_PRESS)
-        );
+        Object tinted = XposedHelpers.newInstance(oldElevated.getClass(), packColor(TINTED), packColor(TINTED_HIGHLIGHT), packColor(TINTED_PRESS));
 
-        Object tinted = XposedHelpers.newInstance(
-                oldTinted.getClass(),
-                packColor(TINTED),
-                packColor(TINTED_HIGHLIGHT),
-                packColor(TINTED_PRESS)
-        );
+        Object backgrounds = XposedHelpers.newInstance(oldBackgrounds.getClass(), elevated, tinted, packColor(mainBackground), packColor(mainHighlight), packColor(mainPress));
 
-        Object backgrounds = XposedHelpers.newInstance(
-                oldBackgrounds.getClass(),
-                elevated,
-                tinted,
-                packColor(mainBackground),
-                packColor(mainHighlight),
-                packColor(mainPress)
-        );
+        Object text = XposedHelpers.newInstance(oldText.getClass(), packColor(TEXT), packColor(TEXT_SUBDUED), packColor(ACCENT), packColor(NEGATIVE), packColor(WARNING), packColor(POSITIVE), packColor(ANNOUNCEMENT));
 
-        /*
-         * e3p:
-         * base, subdued, brightAccent, negative, warning, positive,
-         * announcement
-         */
-        Object text = XposedHelpers.newInstance(
-                oldText.getClass(),
-                packColor(TEXT),
-                packColor(TEXT_SUBDUED),
-                packColor(ACCENT),
-                packColor(NEGATIVE),
-                packColor(WARNING),
-                packColor(POSITIVE),
-                packColor(ANNOUNCEMENT)
-        );
+        Object essential = XposedHelpers.newInstance(oldEssential.getClass(), packColor(TEXT), packColor(0xFF5E7A91), packColor(ACCENT), packColor(0xFFC0364B), packColor(0xFFB67800), packColor(0xFF0A8F69), packColor(ANNOUNCEMENT));
 
-        /*
-         * epo: essential/icon colors in the same semantic order.
-         */
-        Object essential = XposedHelpers.newInstance(
-                oldEssential.getClass(),
-                packColor(TEXT),
-                packColor(0xFF5E7A91),
-                packColor(ACCENT),
-                packColor(0xFFC0364B),
-                packColor(0xFFB67800),
-                packColor(0xFF0A8F69),
-                packColor(ANNOUNCEMENT)
-        );
+        Object decorative = XposedHelpers.newInstance(oldDecorative.getClass(), packColor(DECORATIVE), packColor(DECORATIVE_SUBDUED));
 
-        /*
-         * qoo: decorative base and decorative subdued.
-         */
-        Object decorative = XposedHelpers.newInstance(
-                oldDecorative.getClass(),
-                packColor(DECORATIVE),
-                packColor(DECORATIVE_SUBDUED)
-        );
-
-        return XposedHelpers.newInstance(
-                original.getClass(),
-                backgrounds,
-                text,
-                essential,
-                decorative
-        );
+        return XposedHelpers.newInstance(original.getClass(), backgrounds, text, essential, decorative);
     }
 
     private Object createBlueAccentPalette(Object original) {
-        Object oldBackgrounds =
-                XposedHelpers.getObjectField(original, "a");
-        Object oldElevated =
-                XposedHelpers.getObjectField(oldBackgrounds, "a");
-        Object oldTinted =
-                XposedHelpers.getObjectField(oldBackgrounds, "b");
+        Object oldBackgrounds = getConstructorField(original, 0, 4);
+        Object oldElevated = getConstructorField(oldBackgrounds, 0, 5);
+        Object oldText = getConstructorField(original, 1, 4);
+        Object oldEssential = getConstructorField(original, 2, 4);
+        Object oldDecorative = getConstructorField(original, 3, 4);
 
-        Object oldText =
-                XposedHelpers.getObjectField(original, "b");
-        Object oldEssential =
-                XposedHelpers.getObjectField(original, "c");
-        Object oldDecorative =
-                XposedHelpers.getObjectField(original, "d");
+        Object elevated = XposedHelpers.newInstance(oldElevated.getClass(), packColor(ACCENT), packColor(ACCENT_HIGHLIGHT), packColor(ACCENT_PRESS));
+        Object tinted = XposedHelpers.newInstance(oldElevated.getClass(), packColor(ACCENT), packColor(ACCENT_HIGHLIGHT), packColor(ACCENT_PRESS));
+        Object backgrounds = XposedHelpers.newInstance(oldBackgrounds.getClass(), elevated, tinted, packColor(ACCENT), packColor(ACCENT_HIGHLIGHT), packColor(ACCENT_PRESS));
+        Object text = XposedHelpers.newInstance(oldText.getClass(), packColor(ON_ACCENT), packColor(0xFFD8F1FF), packColor(ON_ACCENT), packColor(0xFFFFE1E6), packColor(0xFFFFF0C2), packColor(0xFFD5FFED), packColor(0xFFDCEEFF));
+        Object essential = XposedHelpers.newInstance(oldEssential.getClass(), packColor(ON_ACCENT), packColor(0xFFD8F1FF), packColor(ON_ACCENT), packColor(0xFFFFE1E6), packColor(0xFFFFF0C2), packColor(0xFFD5FFED), packColor(0xFFDCEEFF));
+        Object decorative = XposedHelpers.newInstance(oldDecorative.getClass(), packColor(ON_ACCENT), packColor(0xFFB9E5FA));
 
-        Object elevated = XposedHelpers.newInstance(
-                oldElevated.getClass(),
-                packColor(ACCENT),
-                packColor(ACCENT_HIGHLIGHT),
-                packColor(ACCENT_PRESS)
-        );
-
-        Object tinted = XposedHelpers.newInstance(
-                oldTinted.getClass(),
-                packColor(ACCENT),
-                packColor(ACCENT_HIGHLIGHT),
-                packColor(ACCENT_PRESS)
-        );
-
-        Object backgrounds = XposedHelpers.newInstance(
-                oldBackgrounds.getClass(),
-                elevated,
-                tinted,
-                packColor(ACCENT),
-                packColor(ACCENT_HIGHLIGHT),
-                packColor(ACCENT_PRESS)
-        );
-
-        /*
-         * Content displayed on the blue accent uses white or lightly tinted
-         * white to maintain contrast.
-         */
-        Object text = XposedHelpers.newInstance(
-                oldText.getClass(),
-                packColor(ON_ACCENT),
-                packColor(0xFFD8F1FF),
-                packColor(ON_ACCENT),
-                packColor(0xFFFFE1E6),
-                packColor(0xFFFFF0C2),
-                packColor(0xFFD5FFED),
-                packColor(0xFFDCEEFF)
-        );
-
-        Object essential = XposedHelpers.newInstance(
-                oldEssential.getClass(),
-                packColor(ON_ACCENT),
-                packColor(0xFFD8F1FF),
-                packColor(ON_ACCENT),
-                packColor(0xFFFFE1E6),
-                packColor(0xFFFFF0C2),
-                packColor(0xFFD5FFED),
-                packColor(0xFFDCEEFF)
-        );
-
-        Object decorative = XposedHelpers.newInstance(
-                oldDecorative.getClass(),
-                packColor(ON_ACCENT),
-                packColor(0xFFB9E5FA)
-        );
-
-        return XposedHelpers.newInstance(
-                original.getClass(),
-                backgrounds,
-                text,
-                essential,
-                decorative
-        );
+        return XposedHelpers.newInstance(original.getClass(), backgrounds, text, essential, decorative);
     }
 
-    /**
-     * Material 3 does not read rjo.a(). Spotify converts Encore into an f3c
-     * ColorScheme and installs it through s540.a(), so it needs a second hook.
-     */
     private void hookMaterial3Palette() {
         try {
-            ClassLoader classLoader = lpparm.classLoader;
+            ClassData colorSchemeData = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("ColorScheme(primary=", "surfaceContainerLowest="))).single();
+            Method materialThemeMethod = findMaterialThemeMethod(colorSchemeData);
+            XposedBridge.log("[SpotifyPlus] Material theme method: " + materialThemeMethod);
+            XposedBridge.hookMethod(materialThemeMethod, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object original = param.args[0];
+                    if (original == null) return;
 
-            Class<?> colorSchemeClass =
-                    XposedHelpers.findClass("p.f3c", classLoader);
-            Class<?> shapesClass =
-                    XposedHelpers.findClass("p.hbn0", classLoader);
-            Class<?> typographyClass =
-                    XposedHelpers.findClass("p.a3v0", classLoader);
-            Class<?> contentClass =
-                    XposedHelpers.findClass("p.jpc", classLoader);
-            Class<?> composerClass =
-                    XposedHelpers.findClass("p.qud", classLoader);
-
-            XposedHelpers.findAndHookMethod(
-                    "p.s540",
-                    classLoader,
-                    "a",
-                    colorSchemeClass,
-                    shapesClass,
-                    typographyClass,
-                    contentClass,
-                    composerClass,
-                    int.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            Object original = param.args[0];
-                            if (original == null) {
-                                return;
-                            }
-
-                            try {
-                                param.args[0] = recolorMaterial3Palette(original);
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + "Failed to recolor Material 3 palette"
-                                );
-                                XposedBridge.log(throwable);
-                            }
-                        }
+                    try {
+                        param.args[0] = recolorMaterial3Palette(original);
+                    } catch (Throwable throwable) {
+                        XposedBridge.log(throwable);
                     }
-            );
+                }
+            });
 
-            XposedBridge.log(TAG + "Material 3 palette hook installed");
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not install Material 3 palette hook");
             XposedBridge.log(throwable);
         }
+    }
+
+    private Method findMaterialThemeMethod(ClassData colorSchemeData) throws Throwable {
+        String colorSchemeClassName = colorSchemeData.getName();
+        List<MethodData> candidates = new ArrayList<>();
+        candidates.addAll(bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(void.class).paramTypes(colorSchemeClassName, null, null, null, null, "int"))));
+        candidates.addAll(bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(void.class).paramTypes(colorSchemeClassName, null, null, null, null, null, "int"))));
+        if (candidates.isEmpty()) throw new IllegalStateException("Could not find the Material theme method for " + colorSchemeClassName);
+        MethodData selected = null;
+        for (MethodData candidate : candidates) {
+            List<String> parameterTypes = candidate.getParamTypeNames();
+            if (parameterTypes.size() == 7 && !"int".equals(parameterTypes.get(5))) {
+                if (selected != null) throw new IllegalStateException("Found multiple direct Material theme methods: " + candidates);
+                selected = candidate;
+            }
+        }
+        if (selected == null && candidates.size() == 1) selected = candidates.get(0);
+        if (selected == null) throw new IllegalStateException("Could not uniquely identify the Material theme method: " + candidates);
+        return selected.getMethodInstance(lpparm.classLoader);
     }
 
     private Object recolorMaterial3Palette(Object original) {
@@ -511,79 +420,28 @@ public class ThemeHook extends SpotifyHook {
                 return cached;
             }
 
-            /*
-             * f3c.n is the Material background role. Only replace Spotify's
-             * normal dark scheme, preserving unrelated dynamic/light schemes.
-             */
-            int originalBackground = unpackColor(
-                    XposedHelpers.getLongField(original, "n")
-            );
-
-            if (originalBackground != 0xFF121212) {
+            if (!hasPackedColor(original, 0xFF121212)) {
                 material3Cache.put(original, original);
                 return original;
             }
 
-            /*
-             * f3c constructor order:
-             *
-             * primary, onPrimary, primaryContainer, onPrimaryContainer,
-             * inversePrimary, secondary, onSecondary, secondaryContainer,
-             * onSecondaryContainer, tertiary, onTertiary, tertiaryContainer,
-             * onTertiaryContainer, background, onBackground, surface,
-             * onSurface, surfaceVariant, onSurfaceVariant, surfaceTint,
-             * inverseSurface, inverseOnSurface, error, onError,
-             * errorContainer, onErrorContainer, outline, outlineVariant,
-             * scrim, surfaceBright, surfaceDim, surfaceContainer,
-             * surfaceContainerHigh, surfaceContainerHighest,
-             * surfaceContainerLow, surfaceContainerLowest
-             */
-            Object replacement = XposedHelpers.newInstance(
-                    original.getClass(),
-                    packColor(ACCENT),                 // primary
-                    packColor(ON_ACCENT),                  // onPrimary
-                    packColor(0xFFCBEAFF),             // primaryContainer
-                    packColor(0xFF082F49),             // onPrimaryContainer
-                    packColor(0xFF7DD3FC),             // inversePrimary
-
-                    packColor(0xFF476F85),             // secondary
-                    packColor(ON_ACCENT),                  // onSecondary
-                    packColor(0xFFD6EFFC),             // secondaryContainer
-                    packColor(0xFF163746),             // onSecondaryContainer
-
-                    packColor(0xFF5E5A92),             // tertiary
-                    packColor(ON_ACCENT),                  // onTertiary
-                    packColor(0xFFE5DFFF),             // tertiaryContainer
-                    packColor(0xFF2B2857),             // onTertiaryContainer
-
-                    packColor(BACKGROUND),             // background
-                    packColor(TEXT),                   // onBackground
-                    packColor(SURFACE),                // surface
-                    packColor(TEXT),                   // onSurface
-                    packColor(0xFFDCECF5),             // surfaceVariant
-                    packColor(0xFF3C5668),             // onSurfaceVariant
-                    packColor(ACCENT),                 // surfaceTint
-
-                    packColor(0xFF233A4A),             // inverseSurface
-                    packColor(0xFFE9F5FB),             // inverseOnSurface
-
-                    packColor(0xFFBA1A1A),             // error
-                    packColor(ON_ACCENT),                  // onError
-                    packColor(0xFFFFDAD6),             // errorContainer
-                    packColor(0xFF410002),             // onErrorContainer
-
-                    packColor(0xFF6F8795),             // outline
-                    packColor(0xFFBFCCD4),             // outlineVariant
-                    packColor(SCRIM),                  // scrim
-
-                    packColor(ON_ACCENT),                  // surfaceBright
-                    packColor(0xFFCFDDE5),             // surfaceDim
-                    packColor(0xFFEDF7FC),             // surfaceContainer
-                    packColor(0xFFE4F1F7),             // surfaceContainerHigh
-                    packColor(0xFFD9EAF2),             // surfaceContainerHighest
-                    packColor(0xFFF4FAFD),             // surfaceContainerLow
-                    packColor(ON_ACCENT)                   // surfaceContainerLowest
-            );
+            int colorCount = 0;
+            for (Constructor<?> constructor : original.getClass().getDeclaredConstructors()) {
+                boolean allColors = constructor.getParameterCount() >= 36;
+                for (Class<?> parameterType : constructor.getParameterTypes()) allColors &= parameterType == long.class;
+                if (allColors) colorCount = Math.max(colorCount, constructor.getParameterCount());
+            }
+            Object[] colors;
+            if (colorCount == 36) {
+                colors = new Object[]{packColor(ACCENT), packColor(ON_ACCENT), packColor(0xFFCBEAFF), packColor(0xFF082F49), packColor(0xFF7DD3FC), packColor(0xFF476F85), packColor(ON_ACCENT), packColor(0xFFD6EFFC), packColor(0xFF163746), packColor(0xFF5E5A92), packColor(ON_ACCENT), packColor(0xFFE5DFFF), packColor(0xFF2B2857), packColor(BACKGROUND), packColor(TEXT), packColor(SURFACE), packColor(TEXT), packColor(0xFFDCECF5), packColor(0xFF3C5668), packColor(ACCENT), packColor(0xFF233A4A), packColor(0xFFE9F5FB), packColor(0xFFBA1A1A), packColor(ON_ACCENT), packColor(0xFFFFDAD6), packColor(0xFF410002), packColor(0xFF6F8795), packColor(0xFFBFCCD4), packColor(SCRIM), packColor(ON_ACCENT), packColor(0xFFCFDDE5), packColor(0xFFEDF7FC), packColor(0xFFE4F1F7), packColor(0xFFD9EAF2), packColor(0xFFF4FAFD), packColor(ON_ACCENT)};
+            } else if (colorCount == 48) {
+                colors = new Object[]{packColor(ACCENT), packColor(ON_ACCENT), packColor(0xFFCBEAFF), packColor(0xFF082F49), packColor(0xFF7DD3FC), packColor(0xFF476F85), packColor(ON_ACCENT), packColor(0xFFD6EFFC), packColor(0xFF163746), packColor(0xFF5E5A92), packColor(ON_ACCENT), packColor(0xFFE5DFFF), packColor(0xFF2B2857), packColor(BACKGROUND), packColor(TEXT), packColor(SURFACE), packColor(TEXT), packColor(0xFFDCECF5), packColor(0xFF3C5668), packColor(ACCENT), packColor(0xFF233A4A), packColor(0xFFE9F5FB), packColor(0xFFBA1A1A), packColor(ON_ACCENT), packColor(0xFFFFDAD6), packColor(0xFF410002), packColor(0xFF6F8795), packColor(0xFFBFCCD4), packColor(SCRIM), packColor(ON_ACCENT), packColor(0xFFCFDDE5), packColor(0xFFEDF7FC), packColor(0xFFE4F1F7), packColor(0xFFD9EAF2), packColor(0xFFF4FAFD), packColor(ON_ACCENT), packColor(ACCENT_HIGHLIGHT), packColor(ACCENT), packColor(ON_ACCENT), packColor(ON_ACCENT), packColor(0xFFD6EFFC), packColor(0xFF476F85), packColor(ON_ACCENT), packColor(0xFF163746), packColor(0xFFE5DFFF), packColor(0xFF5E5A92), packColor(ON_ACCENT), packColor(0xFF2B2857)};
+            } else {
+                XposedBridge.log("[SpotifyPlus] Unsupported Material ColorScheme size: " + colorCount);
+                material3Cache.put(original, original);
+                return original;
+            }
+            Object replacement = XposedHelpers.newInstance(original.getClass(), colors);
 
             material3Cache.put(original, replacement);
             return replacement;
@@ -592,153 +450,161 @@ public class ThemeHook extends SpotifyHook {
 
     private void hookSideDrawerBackground() {
         try {
-            ClassLoader classLoader = lpparm.classLoader;
-
-            Class<?> contextClass =
-                    XposedHelpers.findClass("p.cpt", classLoader);
-            Class<?> dependency1 =
-                    XposedHelpers.findClass("p.ljo0", classLoader);
-            Class<?> dependency2 =
-                    XposedHelpers.findClass("p.pob0", classLoader);
-            Class<?> dependency3 =
-                    XposedHelpers.findClass("p.k1j", classLoader);
-
-            XposedHelpers.findAndHookConstructor(
-                    "p.cjo0",
-                    classLoader,
-                    contextClass,
-                    dependency1,
-                    dependency2,
-                    dependency3,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                /*
-                                 * u1 is the actual visible drawer container.
-                                 * t1 is the outer DrawerLayout/scrim container.
-                                 */
-                                FrameLayout drawer = (FrameLayout)
-                                        XposedHelpers.getObjectField(
-                                                param.thisObject,
-                                                "u1"
-                                        );
-
-                                drawer.setBackgroundColor(SURFACE);
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + "Failed to recolor side drawer"
-                                );
-                                XposedBridge.log(throwable);
-                            }
-                        }
+            Class<?> drawerClass = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("mainLayoutConfig", "drawerState", "No drawer view found with gravity "))).single().getInstance(lpparm.classLoader);
+            XposedBridge.hookAllConstructors(drawerClass, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        ViewGroup drawerLayout = (ViewGroup) param.thisObject;
+                        View outer = drawerLayout.getChildCount() > 0 ? drawerLayout.getChildAt(0) : null;
+                        View drawer = outer instanceof ViewGroup && ((ViewGroup) outer).getChildCount() > 0 ? ((ViewGroup) outer).getChildAt(0) : null;
+                        if (drawer != null) drawer.setBackgroundColor(SURFACE);
+                    } catch (Throwable throwable) {
+                        XposedBridge.log(throwable);
                     }
-            );
+                }
+            });
 
-            XposedBridge.log(TAG + "Side drawer hook installed");
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not install side drawer hook");
             XposedBridge.log(throwable);
         }
     }
 
     private void hookHomeShortcutCards() {
         try {
-            ClassLoader classLoader = lpparm.classLoader;
-
-            Class<?> callbackClass =
-                    XposedHelpers.findClass("p.wyt", classLoader);
-            Class<?> modelClass =
-                    XposedHelpers.findClass("p.u4o0", classLoader);
-            Class<?> dependencyClass =
-                    XposedHelpers.findClass("p.n1x", classLoader);
-
-            /*
-             * Current constructor:
-             *
-             * p5k0(wyt, u4o0, Context, n1x)
-             *
-             * It inflates shortcut_card.xml.
-             */
-            XposedHelpers.findAndHookConstructor(
-                    "p.p5k0",
-                    classLoader,
-                    callbackClass,
-                    modelClass,
-                    Context.class,
-                    dependencyClass,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                /*
-                                 * p5k0.c is the generated shortcut-card holder.
-                                 *
-                                 * holder.i = root CardView
-                                 * holder.c = title TextView
-                                 */
-                                Object holder =
-                                        XposedHelpers.getObjectField(
-                                                param.thisObject,
-                                                "c"
-                                        );
-
-                                Object card =
-                                        XposedHelpers.getObjectField(holder, "i");
-
-                                TextView title = (TextView)
-                                        XposedHelpers.getObjectField(holder, "c");
-
-                                /*
-                                 * Avoid a nearly invisible white-on-white card.
-                                 * A pale blue card also separates each shortcut
-                                 * from the page background.
-                                 */
-                                XposedHelpers.callMethod(
-                                        card,
-                                        "setCardBackgroundColor",
-                                        TINTED
-                                );
-
-                                title.setTextColor(TEXT);
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + "Failed to recolor Home shortcut"
-                                );
-                                XposedBridge.log(throwable);
-                            }
+            int shortcutLayoutId = resourceId("layout", "shortcut_card");
+            int titleId = resourceId("id", "title");
+            List<MethodData> shortcutConstructors = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().name("<init>").paramCount(4).usingNumbers(shortcutLayoutId)));
+            for (MethodData shortcutConstructorData : shortcutConstructors) {
+                Constructor<?> shortcutConstructor = shortcutConstructorData.getConstructorInstance(lpparm.classLoader);
+                XposedBridge.hookMethod(shortcutConstructor, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!themeEnabled) return;
+                        try {
+                            View card = findRootViewWithId(param.thisObject, titleId, 2);
+                            if (card == null) return;
+                            card.setBackgroundTintList(ColorStateList.valueOf(TINTED));
+                            TextView title = card.findViewById(titleId);
+                            if (title != null) title.setTextColor(TEXT);
+                        } catch (Throwable throwable) {
+                            XposedBridge.log(throwable);
                         }
                     }
-            );
+                });
+            }
 
-            XposedBridge.log(TAG + "Home shortcut hook installed");
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not install Home shortcut hook");
             XposedBridge.log(throwable);
         }
     }
 
     private void patchHomeFilterChipColor() {
+        try {
+            ClassData filterChipClass = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("HomeFilterChip").fieldCount(4))).single();
+            List<FieldData> longFields = new ArrayList<>();
+            for (FieldData field : filterChipClass.getFields()) {
+                if ("long".equals(field.getTypeName()) && Modifier.isStatic(field.getModifiers())) longFields.add(field);
+            }
+            if (longFields.size() != 2) throw new IllegalStateException("Expected two Home filter-chip color fields, found " + longFields);
+            if (patchModernHomeFilterChipStyle(filterChipClass)) {
+                hookModernHomeFilterChipRenderer(filterChipClass);
+            } else {
+                homeFilterChipColorField = longFields.get(1).getFieldInstance(lpparm.classLoader);
+                homeFilterChipColorField.setAccessible(true);
+            }
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
         updateHomeFilterChipColor(lpparm.classLoader);
+    }
+
+    private boolean patchModernHomeFilterChipStyle(ClassData filterChipClass) throws Throwable {
+        for (FieldData fieldData : filterChipClass.getFields()) {
+            if (!Modifier.isStatic(fieldData.getModifiers()) || "long".equals(fieldData.getTypeName())) continue;
+            Field field = fieldData.getFieldInstance(lpparm.classLoader);
+            field.setAccessible(true);
+            if (field.getType().isPrimitive()) continue;
+            Object style = field.get(null);
+            if (style == null) continue;
+            Field styleColorSet = findIntFieldWithValue(style, 1);
+            if (styleColorSet == null) continue;
+            Object paletteProvider = null;
+            Field paletteProviderField = null;
+            Field providerColorSet = null;
+            for (Field objectField : getInstanceFields(style.getClass())) {
+                if (objectField.getType().isPrimitive()) continue;
+                Object value = objectField.get(style);
+                if (value == null) continue;
+                List<Field> valueFields = getInstanceFields(value.getClass());
+                int intFieldCount = 0;
+                int objectFieldCount = 0;
+                Field colorSet = null;
+                for (Field valueField : valueFields) {
+                    if (valueField.getType() == int.class) {
+                        intFieldCount++;
+                        if (valueField.getInt(value) == 1) colorSet = valueField;
+                    } else if (!valueField.getType().isPrimitive()) {
+                        objectFieldCount++;
+                    }
+                }
+                if (intFieldCount == 1 && objectFieldCount == 3 && colorSet != null) {
+                    paletteProvider = value;
+                    paletteProviderField = objectField;
+                    providerColorSet = colorSet;
+                    break;
+                }
+            }
+            if (paletteProvider == null) continue;
+            styleColorSet.setInt(style, 2);
+            providerColorSet.setInt(paletteProvider, 2);
+            modernHomeFilterChipUnselectedStyle = style;
+            modernHomeFilterChipProviderField = paletteProviderField;
+            return true;
+        }
+        return false;
+    }
+
+    private void hookModernHomeFilterChipRenderer(ClassData filterChipClass) throws Throwable {
+        Method renderer = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(filterChipClass)).matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(void.class).paramCount(12).usingStrings("HomeFilterChip"))).single().getMethodInstance(lpparm.classLoader);
+        XposedBridge.hookMethod(renderer, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (modernHomeFilterChipProviderReplaced || Boolean.TRUE.equals(param.args[3])) return;
+                try {
+                    Constructor<?> tintedStyleConstructor = null;
+                    for (Constructor<?> constructor : param.args[1].getClass().getDeclaredConstructors()) {
+                        if (constructor.getParameterCount() == 1 && constructor.getParameterTypes()[0] == int.class) tintedStyleConstructor = constructor;
+                    }
+                    if (tintedStyleConstructor == null) return;
+                    tintedStyleConstructor.setAccessible(true);
+                    Object tintedStyle = tintedStyleConstructor.newInstance(2);
+                    Object tintedProvider = modernHomeFilterChipProviderField.get(tintedStyle);
+                    modernHomeFilterChipProviderField.set(modernHomeFilterChipUnselectedStyle, tintedProvider);
+                    modernHomeFilterChipProviderReplaced = true;
+                    XposedBridge.log("[SpotifyPlus] Home filter chips now use the Encore tinted palette through " + tintedStyle.getClass().getName());
+                } catch (Throwable throwable) {
+                    XposedBridge.log(throwable);
+                }
+            }
+        });
+    }
+
+    private static Field findIntFieldWithValue(Object object, int value) throws Throwable {
+        for (Field field : getInstanceFields(object.getClass())) {
+            if (field.getType() == int.class && field.getInt(object) == value) return field;
+        }
+        return null;
     }
 
     private static void updateHomeFilterChipColor(ClassLoader classLoader) {
         try {
-            Class<?> homeFilterChipClass = XposedHelpers.findClass("p.b2w", classLoader);
-
-            /*
-             * b2w.b is the hard-coded #FF333333 unselected-chip color.
-             * It is initialized through inh.f(), so it is not a compile-time
-             * constant and can be changed after class loading.
-             */
-            if (originalHomeFilterChipColor == null) originalHomeFilterChipColor = XposedHelpers.getStaticLongField(homeFilterChipClass, "b");
-            XposedHelpers.setStaticLongField(homeFilterChipClass, "b", themeEnabled ? packColor(TINTED) : originalHomeFilterChipColor);
-
-            XposedBridge.log(TAG + "Home filter-chip color patched");
+            Field colorField = homeFilterChipColorField;
+            if (colorField == null) return;
+            if (originalHomeFilterChipColor == null) originalHomeFilterChipColor = colorField.getLong(null);
+            XposedHelpers.setStaticLongField(colorField.getDeclaringClass(), colorField.getName(), themeEnabled ? packColor(TINTED) : originalHomeFilterChipColor);
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not patch Home filter-chip color");
             XposedBridge.log(throwable);
         }
     }
@@ -750,458 +616,228 @@ public class ThemeHook extends SpotifyHook {
 
     private void hookNowPlayingGradient() {
         try {
-            Class<?> gradientViewClass = XposedHelpers.findClass(
-                    "com.spotify.nowplaying.uiusecases.overlay.OverlayHidingGradientBackgroundView",
-                    lpparm.classLoader
-            );
+            int startColorId = resourceId("color", "bg_gradient_start_color");
+            int endColorId = resourceId("color", "bg_gradient_end_color");
+            Constructor<?> gradientConstructor = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().name("<init>").paramTypes(Context.class, AttributeSet.class, int.class).usingNumbers(startColorId, endColorId).declaredClass(ClassMatcher.create().fieldCount(1).addFieldForType(GradientDrawable.class)))).single().getConstructorInstance(lpparm.classLoader);
+            XposedBridge.hookMethod(gradientConstructor, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        GradientDrawable gradient = (GradientDrawable) getInstanceFieldValue(param.thisObject, GradientDrawable.class);
+                        if (gradient == null) return;
+                        int[] colors = {Color.TRANSPARENT, Color.TRANSPARENT, BACKGROUND};
 
-            XposedHelpers.findAndHookConstructor(
-                    gradientViewClass,
-                    Context.class,
-                    AttributeSet.class,
-                    int.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                GradientDrawable gradient =
-                                        (GradientDrawable) XposedHelpers.getObjectField(
-                                                param.thisObject,
-                                                "Q0"
-                                        );
-
-                                /*
-                                 * Spotify later places the artwork-extracted color
-                                 * behind this drawable using PorterDuff DST_OVER.
-                                 *
-                                 * Keep that color through most of the screen, then
-                                 * gently fade into our light-blue page background.
-                                 */
-                                int[] colors = {
-                                        Color.TRANSPARENT,
-                                        Color.TRANSPARENT,
-                                        BACKGROUND
-                                };
-
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                    gradient.setColors(
-                                            colors,
-                                            new float[]{
-                                                    0.00f,
-                                                    0.88f,
-                                                    1.00f
-                                            }
-                                    );
-                                } else {
-                                    // Approximate the delayed transition on older Android.
-                                    gradient.setColors(new int[]{
-                                            Color.TRANSPARENT,
-                                            Color.TRANSPARENT,
-                                            Color.TRANSPARENT,
-                                            Color.TRANSPARENT,
-                                            BACKGROUND
-                                    });
-                                }
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not update Now Playing gradient: "
-                                                + throwable
-                                );
-                            }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            gradient.setColors(colors, new float[]{0.00f, 0.88f, 1.00f});
+                        } else {
+                            gradient.setColors(new int[]{Color.TRANSPARENT, Color.TRANSPARENT, Color.TRANSPARENT, Color.TRANSPARENT, BACKGROUND});
                         }
+                    } catch (Throwable throwable) {
                     }
-            );
+                }
+            });
         } catch (Throwable throwable) {
-            XposedBridge.log(
-                    TAG + ": Could not hook Now Playing gradient: " + throwable
-            );
         }
     }
 
     private void hookAlbumHeaderGradient() {
+        hookLegacyAlbumHeaderGradient();
+        hookComposeAlbumHeaderGradient();
+    }
+
+    private void hookLegacyAlbumHeaderGradient() {
         try {
-            Class<?> gradientClass =
-                    XposedHelpers.findClass("p.ojv", lpparm.classLoader);
+            int gradientEndId = resourceId("color", "encore_header_gradient_end");
+            MethodData gradientConstructorData = null;
+            for (MethodData source : bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().usingNumbers(gradientEndId)))) {
+                for (MethodData invoked : source.getInvokes()) {
+                    if (!invoked.isConstructor() || invoked.getParamCount() != 1 || !List.class.getName().equals(invoked.getParamTypeNames().get(0))) continue;
+                    ClassData declaredClass = invoked.getDeclaredClass();
+                    if (declaredClass.getFieldCount() != 2 || declaredClass.getInterfaceCount() != 1) continue;
+                    boolean hasList = false;
+                    boolean hasInteger = false;
+                    for (FieldData field : declaredClass.getFields()) {
+                        hasList |= List.class.getName().equals(field.getTypeName());
+                        hasInteger |= Integer.class.getName().equals(field.getTypeName());
+                    }
+                    if (!hasList || !hasInteger) continue;
+                    if (gradientConstructorData != null && !gradientConstructorData.equals(invoked)) throw new IllegalStateException("Found multiple legacy header-gradient constructors");
+                    gradientConstructorData = invoked;
+                }
+            }
+            if (gradientConstructorData == null) return;
+            ClassData gradientClass = gradientConstructorData.getDeclaredClass();
+            String gradientInterface = gradientClass.getInterfaces().get(0).getName();
+            Constructor<?> gradientConstructor = gradientConstructorData.getConstructorInstance(lpparm.classLoader);
+            Constructor<?> positionedGradientConstructor = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().name("<init>").paramTypes(float.class, List.class).declaredClass(ClassMatcher.create().fieldCount(3).addInterface(gradientInterface).addFieldForType(float.class).addFieldForType(List.class).addFieldForType(Integer.class)))).single().getConstructorInstance(lpparm.classLoader);
+            XposedBridge.hookMethod(gradientConstructor, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        List<?> original = (List<?>) param.args[0];
 
-            Class<?> positionedGradientClass =
-                    XposedHelpers.findClass("p.pjv", lpparm.classLoader);
+                        if (original == null || original.size() != 2) {
+                            return;
+                        }
 
-            Class<?> gradientStopClass =
-                    XposedHelpers.findClass("p.njv", lpparm.classLoader);
+                        Object start = original.get(0);
+                        Object darkEnd = original.get(1);
+                        if (start == null || darkEnd == null || start.getClass() == darkEnd.getClass()) return;
+                        Object themedEnd = XposedHelpers.newInstance(darkEnd.getClass(), BACKGROUND);
 
-            Class<?> extractedColorClass =
-                    XposedHelpers.findClass("p.kjv", lpparm.classLoader);
+                        ArrayList<Object> flowingGradient = new ArrayList<>(2);
 
-            Class<?> fixedColorClass =
-                    XposedHelpers.findClass("p.ljv", lpparm.classLoader);
+                        flowingGradient.add(start);
+                        flowingGradient.add(themedEnd);
 
-            XposedHelpers.findAndHookConstructor(
-                    gradientClass,
-                    List.class,
-                    new XC_MethodHook() {
+                        param.args[0] = flowingGradient;
+
+                    } catch (Throwable throwable) {
+                    }
+                }
+            });
+
+            XposedBridge.hookMethod(positionedGradientConstructor, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        List<?> original = (List<?>) param.args[1];
+
+                        if (original == null || original.size() != 3) {
+                            return;
+                        }
+
+                        Object firstStop = original.get(0);
+                        Object secondStop = original.get(1);
+                        Object finalStop = original.get(2);
+
+                        Object firstColor = getOnlyObjectFieldValue(firstStop);
+                        Object secondColor = getOnlyObjectFieldValue(secondStop);
+                        Object finalColor = getOnlyObjectFieldValue(finalStop);
+                        if (firstColor == null || secondColor == null || finalColor == null || firstColor.getClass() != secondColor.getClass() || firstColor.getClass() == finalColor.getClass()) return;
+                        float firstPosition = ((Number) getInstanceFieldValue(firstStop, float.class)).floatValue();
+                        float secondPosition = ((Number) getInstanceFieldValue(secondStop, float.class)).floatValue();
+                        float finalPosition = ((Number) getInstanceFieldValue(finalStop, float.class)).floatValue();
+
+                        if (firstPosition != 0.0f || secondPosition != 0.1f || finalPosition != 1.0f) {
+                            return;
+                        }
+
+                        Object themedEnd = XposedHelpers.newInstance(finalColor.getClass(), BACKGROUND);
+
+                        ArrayList<Object> themedStops = new ArrayList<>(3);
+                        themedStops.add(firstStop);
+                        themedStops.add(secondStop);
+                        themedStops.add(XposedHelpers.newInstance(finalStop.getClass(), 1.0f, themedEnd));
+
+                        param.args[1] = themedStops;
+
+                    } catch (Throwable throwable) {
+                        XposedBridge.log(throwable);
+                    }
+                }
+            });
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
+    }
+
+    private void hookComposeAlbumHeaderGradient() {
+        try {
+            int gradientStartId = resourceId("color", "encore_header_gradient_start");
+            int gradientEndId = resourceId("color", "encore_header_gradient_end");
+            Set<String> factoryDescriptors = new HashSet<>();
+            for (MethodData source : bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().usingNumbers(gradientStartId, gradientEndId)))) {
+                for (MethodData invoked : source.getInvokes()) {
+                    List<String> params = invoked.getParamTypeNames();
+                    if (params.size() != 4 || !List.class.getName().equals(params.get(0)) || !"float".equals(params.get(1)) || !"float".equals(params.get(2)) || !"int".equals(params.get(3)) || !factoryDescriptors.add(invoked.getDescriptor())) continue;
+                    XposedBridge.hookMethod(invoked.getMethodInstance(lpparm.classLoader), new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
+                            if (!themeEnabled || !(param.args[0] instanceof List)) return;
                             try {
                                 List<?> original = (List<?>) param.args[0];
-
-                                /*
-                                 * Album/entity headers normally arrive as:
-                                 *
-                                 *   [artwork-extracted color, fixed #121212]
-                                 *
-                                 * Avoid touching unrelated application gradients.
-                                 */
-                                if (original == null || original.size() != 2) {
-                                    return;
-                                }
-
+                                if (original.size() < 2) return;
                                 Object start = original.get(0);
-                                Object darkEnd = original.get(1);
-
-                                if (!extractedColorClass.isInstance(start)
-                                        || !fixedColorClass.isInstance(darkEnd)) {
-                                    return;
-                                }
-
-                                Object themedEnd = XposedHelpers.newInstance(
-                                        fixedColorClass,
-                                        BACKGROUND
-                                );
-
-                                ArrayList<Object> flowingGradient =
-                                        new ArrayList<>(2);
-
-                                // End the entity header at the live page color.
-                                flowingGradient.add(start);
-                                flowingGradient.add(themedEnd);
-
-                                param.args[0] = flowingGradient;
-
-                                XposedBridge.log(
-                                        TAG + "Recolored linear entity gradient to #"
-                                                + Integer.toHexString(BACKGROUND)
-                                );
+                                Object end = original.get(original.size() - 1);
+                                Object startValue = getInstanceFieldValue(start, long.class);
+                                Object endValue = getInstanceFieldValue(end, long.class);
+                                if (!(startValue instanceof Long) || !(endValue instanceof Long)) return;
+                                if (unpackColor((Long) startValue) != context.getColor(gradientStartId) || unpackColor((Long) endValue) != context.getColor(gradientEndId)) return;
+                                ArrayList<Object> themed = new ArrayList<>(original);
+                                themed.set(themed.size() - 1, XposedHelpers.newInstance(end.getClass(), packColor(BACKGROUND)));
+                                param.args[0] = themed;
                             } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not modify album gradient: "
-                                                + throwable
-                                );
-                            }
-                        }
-                    }
-            );
-
-            /*
-             * Current album pages use pjv, not ojv. vnf case 5 constructs:
-             *
-             *   0.0  artwork/dynamic color
-             *   0.1  artwork/dynamic color
-             *   1.0  fixed Encore background
-             *
-             * The old hook only covered the two-color ojv variant, which is
-             * why it installed successfully without ever changing this screen.
-             */
-            XposedHelpers.findAndHookConstructor(
-                    positionedGradientClass,
-                    float.class,
-                    List.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                List<?> original = (List<?>) param.args[1];
-
-                                if (original == null || original.size() != 3) {
-                                    return;
-                                }
-
-                                Object firstStop = original.get(0);
-                                Object secondStop = original.get(1);
-                                Object finalStop = original.get(2);
-
-                                Object firstColor = XposedHelpers.getObjectField(
-                                        firstStop,
-                                        "b"
-                                );
-                                Object secondColor = XposedHelpers.getObjectField(
-                                        secondStop,
-                                        "b"
-                                );
-                                Object finalColor = XposedHelpers.getObjectField(
-                                        finalStop,
-                                        "b"
-                                );
-
-                                if (!extractedColorClass.isInstance(firstColor)
-                                        || !extractedColorClass.isInstance(secondColor)
-                                        || !fixedColorClass.isInstance(finalColor)) {
-                                    return;
-                                }
-
-                                float firstPosition =
-                                        XposedHelpers.getFloatField(firstStop, "a");
-                                float secondPosition =
-                                        XposedHelpers.getFloatField(secondStop, "a");
-                                float finalPosition =
-                                        XposedHelpers.getFloatField(finalStop, "a");
-
-                                if (firstPosition != 0.0f
-                                        || secondPosition != 0.1f
-                                        || finalPosition != 1.0f) {
-                                    return;
-                                }
-
-                                Object themedEnd = XposedHelpers.newInstance(
-                                        fixedColorClass,
-                                        BACKGROUND
-                                );
-
-                                ArrayList<Object> themedStops = new ArrayList<>(3);
-                                themedStops.add(firstStop);
-                                themedStops.add(secondStop);
-                                themedStops.add(
-                                        XposedHelpers.newInstance(
-                                                gradientStopClass,
-                                                1.0f,
-                                                themedEnd
-                                        )
-                                );
-
-                                param.args[1] = themedStops;
-
-                                XposedBridge.log(
-                                        TAG + "Recolored positioned album gradient to #"
-                                                + Integer.toHexString(BACKGROUND)
-                                );
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not modify positioned album gradient"
-                                );
                                 XposedBridge.log(throwable);
                             }
                         }
-                    }
-            );
-
-            XposedBridge.log(TAG + "Entity-gradient hooks installed");
+                    });
+                }
+            }
         } catch (Throwable throwable) {
-            XposedBridge.log(
-                    TAG + ": Could not hook album header gradient: " + throwable
-            );
+            XposedBridge.log(throwable);
         }
     }
 
     private void hookSpotifyConnectColor() {
         try {
-            Class<?> connectLabelClass = XposedHelpers.findClass(
-                    "com.spotify.connect.destinationbutton.ConnectLabel",
-                    lpparm.classLoader
-            );
-
-            Class<?> connectionInfoClass = XposedHelpers.findClass(
-                    "p.jr20",
-                    lpparm.classLoader
-            );
-
-            /*
-             * x(...) is the connected-device rendering path.
-             * It renders the icon, device name and Lossless suffix in green.
-             */
-            XposedHelpers.findAndHookMethod(
-                    connectLabelClass,
-                    "x",
-                    String.class,
-                    int.class,
-                    boolean.class,
-                    connectionInfoClass,
-                    String.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                TextView deviceName =
-                                        (TextView) XposedHelpers.getObjectField(
-                                                param.thisObject,
-                                                "R0"
-                                        );
-
-                                ImageView deviceIcon =
-                                        (ImageView) XposedHelpers.getObjectField(
-                                                param.thisObject,
-                                                "S0"
-                                        );
-
-                                deviceName.setTextColor(ACCENT);
-                                deviceIcon.setColorFilter(
-                                        ACCENT,
-                                        PorterDuff.Mode.SRC_IN
-                                );
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not recolor Spotify Connect: "
-                                                + throwable
-                                );
-                            }
-                        }
+            int connectLabelLayoutId = resourceId("layout", "connect_device_label");
+            int deviceNameId = resourceId("id", "connect_device_name");
+            int deviceIconId = resourceId("id", "connect_device_icon");
+            ClassData connectLabelClass = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().name("<init>").paramTypes(Context.class, AttributeSet.class, int.class).usingNumbers(connectLabelLayoutId))).single().getDeclaredClass();
+            Method connectRenderMethod = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(connectLabelClass)).matcher(MethodMatcher.create().returnType(void.class).paramTypes(String.class.getName(), null, "boolean", null, String.class.getName()))).single().getMethodInstance(lpparm.classLoader);
+            XposedBridge.hookMethod(connectRenderMethod, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        View label = (View) param.thisObject;
+                        TextView deviceName = label.findViewById(deviceNameId);
+                        ImageView deviceIcon = label.findViewById(deviceIconId);
+                        if (deviceName != null) deviceName.setTextColor(ACCENT);
+                        if (deviceIcon != null) deviceIcon.setColorFilter(ACCENT, PorterDuff.Mode.SRC_IN);
+                    } catch (Throwable throwable) {
                     }
-            );
+                }
+            });
         } catch (Throwable throwable) {
-            XposedBridge.log(
-                    TAG + ": Could not hook Spotify Connect: " + throwable
-            );
         }
     }
 
     private void hookCreativeWorkAlbumHeader() {
         try {
-            Class<?> headerClass = XposedHelpers.findClass(
-                    "p.hol",
-                    lpparm.classLoader
-            );
-
-            /*
-             * Prepare the album header's underlying surface. The artwork gradient
-             * is a child of this surface, so it can now terminate at BACKGROUND
-             * without revealing Spotify's original #121212 underneath.
-             */
-            Set<?> constructorHooks = XposedBridge.hookAllConstructors(
-                    headerClass,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                Object binding = XposedHelpers.getObjectField(
-                                        param.thisObject,
-                                        "d"
-                                );
-
-                                View headerRoot = (View) XposedHelpers.getObjectField(
-                                        binding,
-                                        "b"
-                                );
-
-                                View appBar = (View) XposedHelpers.getObjectField(
-                                        param.thisObject,
-                                        "g"
-                                );
-
-                                headerRoot.setBackgroundColor(BACKGROUND);
-                                appBar.setBackgroundColor(BACKGROUND);
-                                themeAlbumHeaderText(headerRoot);
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not prepare album header: "
-                                                + throwable
-                                );
-                            }
-                        }
+            int headerLayoutId = resourceId("layout", "creative_work_header_layout");
+            ClassData headerData = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().name("<init>").usingNumbers(headerLayoutId))).single().getDeclaredClass();
+            Class<?> headerClass = headerData.getInstance(lpparm.classLoader);
+            creativeWorkGetViewMethod = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(headerData)).matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC).returnType(View.class).paramCount(0))).single().getMethodInstance(lpparm.classLoader);
+            Method headerColorMethod = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(headerData)).matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.STATIC).returnType(void.class).paramTypes(headerData.getName(), "int"))).single().getMethodInstance(lpparm.classLoader);
+            XposedBridge.hookAllConstructors(headerClass, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        applyCreativeWorkAlbumHeader(param.thisObject, null);
+                    } catch (Throwable throwable) {
                     }
-            );
-
-            /*
-             * hol.b(hol, int) receives the actual artwork-extracted color.
-             * Spotify normally applies it behind transparent -> #121212.
-             * Rebuild that drawable as transparent -> themed background.
-             */
-            XposedHelpers.findAndHookMethod(
-                    headerClass,
-                    "b",
-                    headerClass,
-                    int.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                Object header = param.args[0];
-                                int extractedColor = (Integer) param.args[1];
-                                applyCreativeWorkAlbumHeader(
-                                        header,
-                                        extractedColor
-                                );
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not apply album gradient: "
-                                                + throwable
-                                );
-                            }
-                        }
+                }
+            });
+            XposedBridge.hookMethod(headerColorMethod, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        Object header = param.args[0];
+                        int extractedColor = (Integer) param.args[1];
+                        applyCreativeWorkAlbumHeader(header, extractedColor);
+                    } catch (Throwable throwable) {
                     }
-            );
+                }
+            });
 
-            /*
-             * The artwork loader invokes eol only after it has extracted the
-             * album color and called hol.b(). Hooking this callback as well
-             * ensures our drawable wins over every late header/app-bar write.
-             */
-            XposedHelpers.findAndHookMethod(
-                    "p.eol",
-                    lpparm.classLoader,
-                    "invoke",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                Object header = XposedHelpers.getObjectField(
-                                        param.thisObject,
-                                        "b"
-                                );
-
-                                if (!headerClass.isInstance(header)) {
-                                    return;
-                                }
-
-                                int extractedColor = XposedHelpers.getIntField(
-                                        param.thisObject,
-                                        "c"
-                                );
-
-                                applyCreativeWorkAlbumHeader(
-                                        header,
-                                        extractedColor
-                                );
-
-                                Object binding = XposedHelpers.getObjectField(
-                                        header,
-                                        "d"
-                                );
-                                View headerRoot = (View)
-                                        XposedHelpers.getObjectField(binding, "b");
-
-                                headerRoot.post(() -> {
-                                    try {
-                                        applyCreativeWorkAlbumHeader(
-                                                header,
-                                                extractedColor
-                                        );
-                                    } catch (Throwable throwable) {
-                                        XposedBridge.log(
-                                                TAG + ": Delayed album gradient failed"
-                                        );
-                                        XposedBridge.log(throwable);
-                                    }
-                                });
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not apply post-image album gradient"
-                                );
-                                XposedBridge.log(throwable);
-                            }
-                        }
-                    }
-            );
-
-            XposedBridge.log(TAG + "Creative-work album hooks installed");
         } catch (Throwable throwable) {
-            XposedBridge.log(
-                    TAG + ": Could not hook album header: " + throwable
-            );
         }
     }
 
@@ -1222,179 +858,46 @@ public class ThemeHook extends SpotifyHook {
 
     private void hookAlbumTrackRows() {
         try {
-            Class<?> rowClass = XposedHelpers.findClass(
-                    "p.b7i",
-                    lpparm.classLoader
-            );
-
-            Class<?> configurationClass = XposedHelpers.findClass(
-                    "p.qno",
-                    lpparm.classLoader
-            );
-
-            XposedHelpers.findAndHookConstructor(
-                    rowClass,
-                    Context.class,
-                    configurationClass,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                /*
-                                 * b7i has several unrelated constructors.
-                                 * Variant 20 is specifically album_track_row_layout.
-                                 */
-                                if (XposedHelpers.getIntField(
-                                        param.thisObject,
-                                        "a"
-                                ) != 20) {
-                                    return;
-                                }
-
-                                Object binding = XposedHelpers.getObjectField(
-                                        param.thisObject,
-                                        "b"
-                                );
-
-                                TextView title =
-                                        (TextView) XposedHelpers.getObjectField(
-                                                binding,
-                                                "N0"
-                                        );
-
-                                TextView subtitle =
-                                        (TextView) XposedHelpers.getObjectField(
-                                                binding,
-                                                "M0"
-                                        );
-
-                                ColorStateList titleColors = new ColorStateList(
-                                        new int[][]{
-                                                new int[]{android.R.attr.state_activated},
-                                                new int[]{android.R.attr.state_selected},
-                                                new int[]{}
-                                        },
-                                        new int[]{
-                                                ACCENT,
-                                                ACCENT,
-                                                TEXT
-                                        }
-                                );
-
-                                title.setTextColor(titleColors);
-                                subtitle.setTextColor(TEXT_SUBDUED);
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not theme album row: "
-                                                + throwable
-                                );
-                            }
-                        }
+            int rowLayoutId = resourceId("layout", "album_track_row_layout");
+            int titleId = resourceId("id", "title");
+            int subtitleId = resourceId("id", "subtitle");
+            Constructor<?> rowConstructor = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().name("<init>").paramCount(2).usingNumbers(rowLayoutId))).single().getConstructorInstance(lpparm.classLoader);
+            XposedBridge.hookMethod(rowConstructor, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        View row = findRootViewWithId(param.thisObject, titleId, 2);
+                        if (row == null) return;
+                        TextView title = row.findViewById(titleId);
+                        TextView subtitle = row.findViewById(subtitleId);
+                        ColorStateList titleColors = new ColorStateList(new int[][]{new int[]{android.R.attr.state_activated}, new int[]{android.R.attr.state_selected}, new int[]{}}, new int[]{ACCENT, ACCENT, TEXT});
+                        if (title != null) title.setTextColor(titleColors);
+                        if (subtitle != null) subtitle.setTextColor(TEXT_SUBDUED);
+                    } catch (Throwable throwable) {
                     }
-            );
+                }
+            });
         } catch (Throwable throwable) {
-            XposedBridge.log(
-                    TAG + ": Could not hook album rows: " + throwable
-            );
         }
     }
 
     private void hookBottomNavigationGradient() {
         try {
-            Class<?> gradientViewClass = XposedHelpers.findClass(
-                    "com.spotify.musicappplatform.main.MainLayoutGradientView",
-                    lpparm.classLoader
-            );
-
-            XposedHelpers.findAndHookConstructor(
-                    gradientViewClass,
-                    Context.class,
-                    AttributeSet.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if (!themeEnabled) return;
-                            try {
-                                /*
-                                 * Preserve the transparent beginning but fade into
-                                 * the light theme instead of opaque black.
-                                 */
-                                XposedHelpers.callMethod(
-                                        param.thisObject,
-                                        "setTopColor",
-                                        Integer.valueOf(Color.TRANSPARENT)
-                                );
-
-                                XposedHelpers.callMethod(
-                                        param.thisObject,
-                                        "setBottomColor",
-                                        Integer.valueOf(BACKGROUND)
-                                );
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + ": Could not update navigation gradient: "
-                                                + throwable
-                                );
-                            }
-                        }
+            Class<?> gradientViewClass = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("topColor", "getTopColor()Ljava/lang/Integer;", "bottomColor", "getBottomColor()Ljava/lang/Integer;", "easing"))).single().getInstance(lpparm.classLoader);
+            Constructor<?> gradientConstructor = gradientViewClass.getDeclaredConstructor(Context.class, AttributeSet.class);
+            XposedBridge.hookMethod(gradientConstructor, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!themeEnabled) return;
+                    try {
+                        ((View) param.thisObject).setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{Color.TRANSPARENT, BACKGROUND}));
+                    } catch (Throwable throwable) {
                     }
-            );
+                }
+            });
         } catch (Throwable throwable) {
-            XposedBridge.log(
-                    TAG + ": Could not hook navigation gradient: " + throwable
-            );
         }
-    }
-
-    private static void applyLightBluePalette() {
-        BACKGROUND = 0xFFEAF6FF;
-        BACKGROUND_HIGHLIGHT = 0xFFD8ECFA;
-        BACKGROUND_PRESS = 0xFFC6E1F4;
-
-        SURFACE = 0xFFF7FBFF;
-        SURFACE_HIGHLIGHT = 0xFFE3F2FC;
-        SURFACE_PRESS = 0xFFCFE7F7;
-
-        TINTED = 0xFFD6EEFF;
-        TINTED_HIGHLIGHT = 0xFFC2E4FF;
-        TINTED_PRESS = 0xFFA9D8FA;
-
-        TEXT = 0xFF102A43;
-        TEXT_SUBDUED = 0xFF52718A;
-
-        ACCENT = 0xFF0077B6;
-        ACCENT_HIGHLIGHT = 0xFF159AD8;
-        ACCENT_PRESS = 0xFF0369A1;
-
-        ANNOUNCEMENT = 0xFF006FB0;
-        DECORATIVE = 0xFF138CCB;
-        DECORATIVE_SUBDUED = 0xFFA8D7F2;
-    }
-
-    private static void applyLavenderPalette() {
-        BACKGROUND = 0xFFF6F0FF;
-        BACKGROUND_HIGHLIGHT = 0xFFE9DEFA;
-        BACKGROUND_PRESS = 0xFFDCCBF3;
-
-        SURFACE = 0xFFFCFAFF;
-        SURFACE_HIGHLIGHT = 0xFFF0E8FA;
-        SURFACE_PRESS = 0xFFE3D7F2;
-
-        TINTED = 0xFFEADFFF;
-        TINTED_HIGHLIGHT = 0xFFDCCBFA;
-        TINTED_PRESS = 0xFFCBB4F1;
-
-        TEXT = 0xFF2E2140;
-        TEXT_SUBDUED = 0xFF705C86;
-
-        ACCENT = 0xFF7C3AED;
-        ACCENT_HIGHLIGHT = 0xFF955BF2;
-        ACCENT_PRESS = 0xFF6D28D9;
-
-        ANNOUNCEMENT = 0xFF6D3BD1;
-        DECORATIVE = 0xFF8651D6;
-        DECORATIVE_SUBDUED = 0xFFD8C4F2;
     }
 
     public static void onPaletteChanged(ClassLoader classLoader) {
@@ -1406,15 +909,7 @@ public class ThemeHook extends SpotifyHook {
             material3Cache.clear();
         }
 
-        ThemeResourcesHook.applyPalette(
-                BACKGROUND,
-                SURFACE,
-                TINTED,
-                TEXT,
-                TEXT_SUBDUED,
-                ACCENT,
-                ON_ACCENT
-        );
+        ThemeResourcesHook.applyPalette(BACKGROUND, SURFACE, TINTED, TEXT, TEXT_SUBDUED, ACCENT, ON_ACCENT);
 
         updateHomeFilterChipColor(classLoader);
 
@@ -1422,98 +917,41 @@ public class ThemeHook extends SpotifyHook {
         refreshComposeHosts();
     }
 
-    /**
-     * Tracks every Compose host, including hosts owned by cached and currently
-     * detached bottom-navigation pages. p.o4 is this Spotify build's
-     * obfuscated AbstractComposeView base class.
-     */
     private void hookComposeHosts() {
         try {
-            Class<?> composeHostClass = XposedHelpers.findClass(
-                    "p.o4",
-                    lpparm.classLoader
-            );
+            ClassData composeHostData = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("Cannot add views to ", "; only Compose content is supported"))).single();
+            Class<?> composeHostClass = composeHostData.getInstance(lpparm.classLoader);
+            composeCreateMethod = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(composeHostData)).matcher(MethodMatcher.create().returnType(void.class).paramCount(0).addUsingString("createComposition requires", StringMatchType.Contains))).single().getMethodInstance(lpparm.classLoader);
+            composeDisposeMethod = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(composeHostData)).matcher(MethodMatcher.create().returnType(void.class).paramCount(0).addInvoke(MethodMatcher.create().name("requestLayout").returnType(void.class).paramCount(0)))).single().getMethodInstance(lpparm.classLoader);
+            XposedBridge.hookAllConstructors(composeHostClass, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    composeHosts.put(param.thisObject, Boolean.TRUE);
+                }
+            });
 
-            XposedBridge.hookAllConstructors(
-                    composeHostClass,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            composeHosts.put(param.thisObject, Boolean.TRUE);
-                        }
-                    }
-            );
-
-            XposedBridge.log(TAG + "Compose-host tracking installed");
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not track Compose hosts");
             XposedBridge.log(throwable);
         }
     }
 
-    private void applyCreativeWorkAlbumHeader(
-            Object header,
-            int extractedColor
-    ) {
+    private void applyCreativeWorkAlbumHeader(Object header, Integer extractedColor) throws Throwable {
         if (!themeEnabled) return;
-        Object binding = XposedHelpers.getObjectField(header, "d");
+        Method getViewMethod = creativeWorkGetViewMethod;
+        if (getViewMethod == null) return;
+        View appBar = (View) getViewMethod.invoke(header);
+        if (appBar == null) return;
+        View artworkBackground = appBar.findViewById(resourceId("id", "artwork_background"));
 
-        View artworkBackground = (View) XposedHelpers.getObjectField(
-                binding,
-                "d"
-        );
-        View headerRoot = (View) XposedHelpers.getObjectField(
-                binding,
-                "b"
-        );
-        View appBar = (View) XposedHelpers.getObjectField(header, "g");
-
-        int[] colors = {
-                Color.TRANSPARENT,
-                Color.TRANSPARENT,
-                BACKGROUND
-        };
-
-        GradientDrawable gradient = new GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                colors
-        );
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            gradient.setColors(
-                    colors,
-                    new float[]{
-                            0.00f,
-                            0.38f,
-                            1.00f
-                    }
-            );
-        }
-
-        gradient.setColorFilter(
-                new PorterDuffColorFilter(
-                        extractedColor,
-                        PorterDuff.Mode.DST_OVER
-                )
-        );
-
-        artworkBackground.setBackground(gradient);
-        headerRoot.setBackgroundColor(BACKGROUND);
+        int[] colors = {Color.TRANSPARENT, Color.TRANSPARENT, BACKGROUND};
+        GradientDrawable gradient = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, colors);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) gradient.setColors(colors, new float[]{0.00f, 0.38f, 1.00f});
+        if (extractedColor != null) gradient.setColorFilter(new PorterDuffColorFilter(extractedColor, PorterDuff.Mode.DST_OVER));
+        if (artworkBackground != null) artworkBackground.setBackground(gradient);
         appBar.setBackgroundColor(BACKGROUND);
-        themeAlbumHeaderText(headerRoot);
-
-        XposedBridge.log(
-                TAG + "Applied album gradient #"
-                        + Integer.toHexString(extractedColor)
-                        + " -> #" + Integer.toHexString(BACKGROUND)
-        );
+        themeAlbumHeaderText(appBar);
     }
 
-    /**
-     * o4.k() disposes the current composition but retains the host's content
-     * function. Attached hosts are recreated immediately with o4.j(); detached
-     * cached pages recreate with the new palette when they next attach.
-     */
     private static void refreshComposeHosts() {
         List<Object> hosts;
 
@@ -1529,143 +967,65 @@ public class ThemeHook extends SpotifyHook {
             }
 
             try {
-                boolean attached = (Boolean) XposedHelpers.callMethod(
-                        host,
-                        "isAttachedToWindow"
-                );
-
-                XposedHelpers.callMethod(host, "k");
-
-                if (attached) {
-                    XposedHelpers.callMethod(host, "j");
-                }
+                boolean attached = host instanceof View && ((View) host).isAttachedToWindow();
+                Method disposeMethod = composeDisposeMethod;
+                Method createMethod = composeCreateMethod;
+                if (disposeMethod == null || createMethod == null) continue;
+                disposeMethod.invoke(host);
+                if (attached) createMethod.invoke(host);
 
                 refreshed++;
             } catch (Throwable throwable) {
-                XposedBridge.log(TAG + "Could not refresh a Compose host");
                 XposedBridge.log(throwable);
             }
         }
 
-        XposedBridge.log(
-                TAG + "Palette generation " + paletteGeneration
-                        + " refreshed " + refreshed + " Compose hosts"
-        );
     }
 
     private void hookTrackArtworkColor() {
         try {
-            Class<?> playerConsumerClass = XposedHelpers.findClass(
-                    "p.fa40",
-                    lpparm.classLoader
-            );
-
-            XposedHelpers.findAndHookMethod(
-                    playerConsumerClass,
-                    "accept",
-                    Object.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            /*
-                             * fa40 variant 3 handles the global PlayerState.
-                             */
-                            if (XposedHelpers.getIntField(
-                                    param.thisObject,
-                                    "a"
-                            ) != 3) {
-                                return;
+            Class<?> playerStateClass = XposedHelpers.findClass("com.spotify.player.model.PlayerState", lpparm.classLoader);
+            Class<?> contextTrackClass = XposedHelpers.findClass("com.spotify.player.model.ContextTrack", lpparm.classLoader);
+            var playerConsumerMethods = bridge.findMethod(FindMethod.create().matcher(MethodMatcher.create().returnType(void.class).paramTypes(Object.class).usingStrings("image_url").declaredClass(ClassMatcher.create().fieldCount(2).addInterface("io.reactivex.rxjava3.functions.Consumer").addFieldForType(int.class))));
+            if (playerConsumerMethods.isEmpty()) throw new IllegalStateException("[ThemeHook/DexKit] Could not find a two-field Rx Consumer that reads image_url from player state");
+            XposedBridge.log("[SpotifyPlus] Auto-theme player-state consumers: " + playerConsumerMethods.stream().map(MethodData::getDescriptor).collect(java.util.stream.Collectors.joining(", ")));
+            Set<String> hookedDescriptors = new HashSet<>();
+            for (MethodData playerConsumerMethod : playerConsumerMethods) {
+                if (!hookedDescriptors.add(playerConsumerMethod.getDescriptor())) continue;
+                Method consumerMethod = playerConsumerMethod.getMethodInstance(lpparm.classLoader);
+                boolean metadataFlatteningConsumer = getInstanceFields(consumerMethod.getDeclaringClass()).stream().anyMatch(field -> field.getType() == Object.class);
+                XposedBridge.hookMethod(consumerMethod, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            Map<?, ?> metadata = findCurrentTrackMetadata(param.args[0], playerStateClass, contextTrackClass);
+                            if (metadata == null && metadataFlatteningConsumer) metadata = findMapWithKey(param.args[0], "image_url", 4, new IdentityHashMap<>());
+                            if (metadata == null) return;
+                            Object imageValue = metadata.get("image_url");
+                            if (!(imageValue instanceof String) || ((String) imageValue).isEmpty()) return;
+                            String imageUrl = (String) imageValue;
+                            Integer fallbackColor = null;
+                            Object colorValue = metadata.get("extracted_color");
+                            if (colorValue instanceof String && !((String) colorValue).isEmpty()) {
+                                String encodedColor = (String) colorValue;
+                                try {
+                                    fallbackColor = Color.parseColor(encodedColor.startsWith("#") ? encodedColor : "#" + encodedColor);
+                                } catch (IllegalArgumentException ignored) {
+                                }
                             }
-
-                            try {
-                                Object stateWrapper = param.args[0];
-
-                                Object playerState =
-                                        XposedHelpers.getObjectField(
-                                                stateWrapper,
-                                                "a"
-                                        );
-
-                                if (playerState == null) {
-                                    return;
-                                }
-
-                                Object trackOptional =
-                                        XposedHelpers.callMethod(
-                                                playerState,
-                                                "track"
-                                        );
-
-                                Object contextTrack =
-                                        XposedHelpers.callMethod(
-                                                trackOptional,
-                                                "h"
-                                        );
-
-                                if (contextTrack == null) {
-                                    return;
-                                }
-
-                                Map<?, ?> metadata = (Map<?, ?>)
-                                        XposedHelpers.callMethod(
-                                                contextTrack,
-                                                "metadata"
-                                        );
-
-                                String imageUrl =
-                                        (String) metadata.get("image_url");
-
-                                if (imageUrl == null || imageUrl.isEmpty()) {
-                                    return;
-                                }
-
-                                /*
-                                 * Keep Spotify's color only as a fallback if the
-                                 * artwork cannot be loaded.
-                                 */
-                                Integer fallbackColor = null;
-                                String encodedColor =
-                                        (String) metadata.get("extracted_color");
-
-                                if (encodedColor != null
-                                        && !encodedColor.isEmpty()) {
-                                    try {
-                                        fallbackColor = Color.parseColor(
-                                                encodedColor.startsWith("#")
-                                                        ? encodedColor
-                                                        : "#" + encodedColor
-                                        );
-                                    } catch (IllegalArgumentException ignored) {
-                                    }
-                                }
-
-                                requestArtworkTheme(
-                                        imageUrl,
-                                        fallbackColor
-                                );
-                            } catch (Throwable throwable) {
-                                XposedBridge.log(
-                                        TAG + "Failed reading artwork metadata"
-                                );
-                                XposedBridge.log(throwable);
-                            }
+                            requestArtworkTheme(imageUrl, fallbackColor);
+                        } catch (Throwable throwable) {
+                            XposedBridge.log(throwable);
                         }
                     }
-            );
-
-            XposedBridge.log(TAG + "Artwork image hook installed");
+                });
+            }
         } catch (Throwable throwable) {
-            XposedBridge.log(
-                    TAG + "Could not hook artwork metadata"
-            );
             XposedBridge.log(throwable);
         }
     }
 
-    private void requestArtworkTheme(
-            String spotifyImageUrl,
-            Integer fallbackColor
-    ) {
+    private void requestArtworkTheme(String spotifyImageUrl, Integer fallbackColor) {
         if (!themeEnabled || !prefs.getBoolean("auto_theme", false)) {
             lastArtworkUrl = null;
             artworkRequestGeneration.incrementAndGet();
@@ -1675,9 +1035,7 @@ public class ThemeHook extends SpotifyHook {
 
         if (downloadUrl == null) {
             if (fallbackColor != null) {
-                paletteHandler.post(() ->
-                        applyArtworkTheme(fallbackColor)
-                );
+                paletteHandler.post(() -> applyArtworkTheme(fallbackColor));
             }
 
             return;
@@ -1689,16 +1047,13 @@ public class ThemeHook extends SpotifyHook {
 
         lastArtworkUrl = downloadUrl;
 
-        int generation =
-                artworkRequestGeneration.incrementAndGet();
+        int generation = artworkRequestGeneration.incrementAndGet();
 
-        Integer cachedColor =
-                artworkColorCache.get(downloadUrl);
+        Integer cachedColor = artworkColorCache.get(downloadUrl);
 
         if (cachedColor != null) {
             paletteHandler.post(() -> {
-                if (generation
-                        == artworkRequestGeneration.get()) {
+                if (generation == artworkRequestGeneration.get()) {
                     applyArtworkTheme(cachedColor);
                 }
             });
@@ -1713,16 +1068,11 @@ public class ThemeHook extends SpotifyHook {
                 Bitmap artwork = downloadArtwork(downloadUrl);
 
                 if (artwork != null) {
-                    selectedColor =
-                            selectArtworkColor(artwork);
+                    selectedColor = selectArtworkColor(artwork);
 
                     artwork.recycle();
                 }
             } catch (Throwable throwable) {
-                XposedBridge.log(
-                        TAG + "Artwork download/extraction failed: "
-                                + downloadUrl
-                );
                 XposedBridge.log(throwable);
             }
 
@@ -1734,27 +1084,15 @@ public class ThemeHook extends SpotifyHook {
                 return;
             }
 
-            artworkColorCache.put(
-                    downloadUrl,
-                    selectedColor
-            );
+            artworkColorCache.put(downloadUrl, selectedColor);
 
             final int result = selectedColor;
 
             paletteHandler.post(() -> {
-                /*
-                 * Ignore a slow response if another track started while this
-                 * artwork was downloading.
-                 */
-                if (generation
-                        != artworkRequestGeneration.get()) {
+                if (generation != artworkRequestGeneration.get()) {
                     return;
                 }
 
-                XposedBridge.log(
-                        TAG + "Selected artwork color #"
-                                + Integer.toHexString(result)
-                );
 
                 applyArtworkTheme(result);
             });
@@ -1771,8 +1109,7 @@ public class ThemeHook extends SpotifyHook {
         String spotifyPrefix = "spotify:image:";
 
         if (trimmed.startsWith(spotifyPrefix)) {
-            String imageId =
-                    trimmed.substring(spotifyPrefix.length());
+            String imageId = trimmed.substring(spotifyPrefix.length());
 
             if (imageId.isEmpty()) {
                 return null;
@@ -1781,46 +1118,33 @@ public class ThemeHook extends SpotifyHook {
             return "https://i.scdn.co/image/" + imageId;
         }
 
-        if (trimmed.startsWith("https://")
-                || trimmed.startsWith("http://")) {
+        if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
             return trimmed;
         }
 
-        XposedBridge.log(
-                TAG + "Unsupported artwork URI: " + trimmed
-        );
 
         return null;
     }
 
-    private static Bitmap downloadArtwork(String imageUrl)
-            throws Exception {
+    private static Bitmap downloadArtwork(String imageUrl) throws Exception {
         HttpURLConnection connection = null;
 
         try {
-            connection = (HttpURLConnection)
-                    new URL(imageUrl).openConnection();
+            connection = (HttpURLConnection) new URL(imageUrl).openConnection();
 
             connection.setConnectTimeout(6000);
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty(
-                    "User-Agent",
-                    "SpotifyPlus/ArtworkTheme"
-            );
+            connection.setRequestProperty("User-Agent", "SpotifyPlus/ArtworkTheme");
 
             int status = connection.getResponseCode();
 
             if (status < 200 || status >= 300) {
-                throw new IllegalStateException(
-                        "Artwork request returned HTTP " + status
-                );
+                throw new IllegalStateException("Artwork request returned HTTP " + status);
             }
 
-            try (InputStream stream =
-                         connection.getInputStream()) {
-                Bitmap decoded =
-                        BitmapFactory.decodeStream(stream);
+            try (InputStream stream = connection.getInputStream()) {
+                Bitmap decoded = BitmapFactory.decodeStream(stream);
 
                 if (decoded == null) {
                     return null;
@@ -1836,22 +1160,11 @@ public class ThemeHook extends SpotifyHook {
 
                 float scale = 64.0f / largest;
 
-                int scaledWidth = Math.max(
-                        1,
-                        Math.round(width * scale)
-                );
+                int scaledWidth = Math.max(1, Math.round(width * scale));
 
-                int scaledHeight = Math.max(
-                        1,
-                        Math.round(height * scale)
-                );
+                int scaledHeight = Math.max(1, Math.round(height * scale));
 
-                Bitmap scaled = Bitmap.createScaledBitmap(
-                        decoded,
-                        scaledWidth,
-                        scaledHeight,
-                        true
-                );
+                Bitmap scaled = Bitmap.createScaledBitmap(decoded, scaledWidth, scaledHeight, true);
 
                 if (scaled != decoded) {
                     decoded.recycle();
@@ -1867,14 +1180,10 @@ public class ThemeHook extends SpotifyHook {
     }
 
     private static int selectArtworkColor(Bitmap bitmap) {
-        /*
-         * 24 hue ranges × 4 saturation ranges × 4 brightness ranges.
-         */
         final int hueBuckets = 24;
         final int saturationBuckets = 4;
         final int valueBuckets = 4;
-        final int bucketCount =
-                hueBuckets * saturationBuckets * valueBuckets;
+        final int bucketCount = hueBuckets * saturationBuckets * valueBuckets;
 
         int[] populations = new int[bucketCount];
         long[] redTotals = new long[bucketCount];
@@ -1886,15 +1195,7 @@ public class ThemeHook extends SpotifyHook {
 
         int[] pixels = new int[width * height];
 
-        bitmap.getPixels(
-                pixels,
-                0,
-                width,
-                0,
-                0,
-                width,
-                height
-        );
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
 
         float[] hsv = new float[3];
 
@@ -1909,10 +1210,6 @@ public class ThemeHook extends SpotifyHook {
             float saturation = hsv[1];
             float value = hsv[2];
 
-            /*
-             * Ignore almost-black and almost-white neutral pixels. They commonly
-             * come from borders, text and logos rather than the cover's identity.
-             */
             if (value < 0.07f) {
                 continue;
             }
@@ -1921,25 +1218,10 @@ public class ThemeHook extends SpotifyHook {
                 continue;
             }
 
-            int hueBucket = Math.min(
-                    hueBuckets - 1,
-                    (int) (hue / 360.0f * hueBuckets)
-            );
-
-            int saturationBucket = Math.min(
-                    saturationBuckets - 1,
-                    (int) (saturation * saturationBuckets)
-            );
-
-            int valueBucket = Math.min(
-                    valueBuckets - 1,
-                    (int) (value * valueBuckets)
-            );
-
-            int bucket =
-                    hueBucket * saturationBuckets * valueBuckets
-                            + saturationBucket * valueBuckets
-                            + valueBucket;
+            int hueBucket = Math.min(hueBuckets - 1, (int) (hue / 360.0f * hueBuckets));
+            int saturationBucket = Math.min(saturationBuckets - 1, (int) (saturation * saturationBuckets));
+            int valueBucket = Math.min(valueBuckets - 1, (int) (value * valueBuckets));
+            int bucket = hueBucket * saturationBuckets * valueBuckets + saturationBucket * valueBuckets + valueBucket;
 
             populations[bucket]++;
             redTotals[bucket] += Color.red(pixel);
@@ -1950,46 +1232,24 @@ public class ThemeHook extends SpotifyHook {
         int bestBucket = -1;
         double bestScore = Double.NEGATIVE_INFINITY;
 
-        for (int bucket = 0;
-             bucket < bucketCount;
-             bucket++) {
+        for (int bucket = 0; bucket < bucketCount; bucket++) {
             int population = populations[bucket];
 
             if (population == 0) {
                 continue;
             }
 
-            int red = (int) (
-                    redTotals[bucket] / population
-            );
-
-            int green = (int) (
-                    greenTotals[bucket] / population
-            );
-
-            int blue = (int) (
-                    blueTotals[bucket] / population
-            );
-
-            int averageColor =
-                    Color.rgb(red, green, blue);
+            int red = (int) (redTotals[bucket] / population);
+            int green = (int) (greenTotals[bucket] / population);
+            int blue = (int) (blueTotals[bucket] / population);
+            int averageColor = Color.rgb(red, green, blue);
 
             Color.colorToHSV(averageColor, hsv);
 
-            double saturationWeight =
-                    0.70 + hsv[1] * 0.85;
+            double saturationWeight = 0.70 + hsv[1] * 0.85;
+            double brightnessWeight = 1.15 - Math.abs(hsv[2] - 0.55) * 0.45;
 
-            /*
-             * Avoid selecting tiny bright logos over a much larger cover color.
-             * Population remains the strongest part of the score.
-             */
-            double brightnessWeight =
-                    1.15 - Math.abs(hsv[2] - 0.55) * 0.45;
-
-            double score =
-                    population
-                            * saturationWeight
-                            * brightnessWeight;
+            double score = population * saturationWeight * brightnessWeight;
 
             if (score > bestScore) {
                 bestScore = score;
@@ -2006,11 +1266,7 @@ public class ThemeHook extends SpotifyHook {
 
         int population = populations[bestBucket];
 
-        return Color.rgb(
-                (int) (redTotals[bestBucket] / population),
-                (int) (greenTotals[bestBucket] / population),
-                (int) (blueTotals[bestBucket] / population)
-        );
+        return Color.rgb((int) (redTotals[bestBucket] / population), (int) (greenTotals[bestBucket] / population), (int) (blueTotals[bestBucket] / population));
     }
 
     private static int averageBitmapColor(int[] pixels) {
@@ -2034,11 +1290,7 @@ public class ThemeHook extends SpotifyHook {
             return 0xFF303030;
         }
 
-        return Color.rgb(
-                (int) (red / count),
-                (int) (green / count),
-                (int) (blue / count)
-        );
+        return Color.rgb((int) (red / count), (int) (green / count), (int) (blue / count));
     }
 
     private void applyArtworkTheme(int artworkColor) {
@@ -2046,98 +1298,49 @@ public class ThemeHook extends SpotifyHook {
         generateTheme(artworkColor, prefs.getString("auto_theme_mode", "neutral"), lpparm.classLoader);
     }
 
-    private static int blendColors(
-            int first,
-            int second,
-            float secondAmount
-    ) {
+    private static int blendColors(int first, int second, float secondAmount) {
         float firstAmount = 1.0f - secondAmount;
 
-        return Color.rgb(
-                Math.round(Color.red(first) * firstAmount
-                        + Color.red(second) * secondAmount),
-                Math.round(Color.green(first) * firstAmount
-                        + Color.green(second) * secondAmount),
-                Math.round(Color.blue(first) * firstAmount
-                        + Color.blue(second) * secondAmount)
-        );
-    }
-
-    private static int ensureDarkEnough(int color) {
-        double luminance =
-                0.2126 * (Color.red(color) / 255.0)
-                        + 0.7152 * (Color.green(color) / 255.0)
-                        + 0.0722 * (Color.blue(color) / 255.0);
-
-        if (luminance <= 0.48) {
-            return color;
-        }
-
-        return blendColors(color, Color.BLACK, 0.38f);
+        return Color.rgb(Math.round(Color.red(first) * firstAmount + Color.red(second) * secondAmount), Math.round(Color.green(first) * firstAmount + Color.green(second) * secondAmount), Math.round(Color.blue(first) * firstAmount + Color.blue(second) * secondAmount));
     }
 
     private void hookVisibleActivity() {
         try {
-            XposedHelpers.findAndHookMethod(
-                    Activity.class,
-                    "onResume",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            Activity activity = (Activity) param.thisObject;
-
-                            if (!"com.spotify.music".equals(
-                                    activity.getPackageName()
-                            )) {
-                                return;
-                            }
-
-                            visibleActivity = new WeakReference<>(activity);
-
-                            boolean stale;
-
-                            synchronized (activityPaletteGenerations) {
-                                Integer appliedGeneration =
-                                        activityPaletteGenerations.get(activity);
-
-                                if (appliedGeneration == null) {
-                                    activityPaletteGenerations.put(
-                                            activity,
-                                            paletteGeneration
-                                    );
-                                    stale = false;
-                                } else {
-                                    stale = appliedGeneration != paletteGeneration;
-
-                                    if (stale) {
-                                        activityPaletteGenerations.put(
-                                                activity,
-                                                paletteGeneration
-                                        );
-                                    }
-                                }
-                            }
-
-                            XposedBridge.log(
-                                    TAG + "Visible activity: "
-                                            + activity.getClass().getName()
-                            );
-
-                            if (stale) {
-                                /*
-                                 * This activity was covered when the song
-                                 * changed (usually SpotifyMainActivity beneath
-                                 * Now Playing). Rebuild it as it returns.
-                                 */
-                                paletteHandler.post(() ->
-                                        recreateActivity(activity)
-                                );
-                            }
+            Application application = context instanceof Application ? (Application) context : null;
+            if (application == null && context.getApplicationContext() instanceof Application) application = (Application) context.getApplicationContext();
+            if (application == null) throw new IllegalStateException("Could not obtain Spotify's Application for activity lifecycle tracking");
+            application.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+                @Override
+                public void onActivityResumed(Activity activity) {
+                    if (!context.getPackageName().equals(activity.getPackageName())) return;
+                    visibleActivity = new WeakReference<>(activity);
+                    boolean stale;
+                    synchronized (activityPaletteGenerations) {
+                        Integer appliedGeneration = activityPaletteGenerations.get(activity);
+                        if (appliedGeneration == null) {
+                            activityPaletteGenerations.put(activity, paletteGeneration);
+                            stale = false;
+                        } else {
+                            stale = appliedGeneration != paletteGeneration;
+                            if (stale) activityPaletteGenerations.put(activity, paletteGeneration);
                         }
                     }
-            );
+                    if (stale) paletteHandler.post(() -> recreateActivity(activity));
+                }
+                @Override
+                public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
+                @Override
+                public void onActivityStarted(Activity activity) {}
+                @Override
+                public void onActivityPaused(Activity activity) {}
+                @Override
+                public void onActivityStopped(Activity activity) {}
+                @Override
+                public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+                @Override
+                public void onActivityDestroyed(Activity activity) {}
+            });
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not track visible activity");
             XposedBridge.log(throwable);
         }
     }
@@ -2146,9 +1349,6 @@ public class ThemeHook extends SpotifyHook {
         Activity activity = visibleActivity.get();
 
         if (activity == null) {
-            XposedBridge.log(
-                    TAG + "Palette changed, but no visible activity was captured"
-            );
             return;
         }
 
@@ -2180,83 +1380,31 @@ public class ThemeHook extends SpotifyHook {
                     content.invalidate();
                 }
                 activity.getWindow().getDecorView().invalidate();
-                XposedBridge.log(TAG + "Rebased " + activity.getClass().getName() + " in place while lyrics are open for palette generation " + paletteGeneration);
                 return;
             }
 
-            XposedBridge.log(
-                    TAG + "Recreating " + activity.getClass().getName()
-                            + " for palette generation " + paletteGeneration
-            );
 
             RemoveCreateButtonHook.resetSettingsOverlayState();
             activity.recreate();
         } catch (Throwable throwable) {
-            XposedBridge.log(TAG + "Could not recreate Spotify activity");
             XposedBridge.log(throwable);
         }
-    }
-
-    private static int createArtworkAccent(int background, int contrastTarget) {
-        float[] hsv = new float[3];
-        Color.colorToHSV(background, hsv);
-
-        /*
-         * Retain the artwork hue. Raise saturation slightly so buttons and active
-         * controls do not become gray when the extracted color is muted.
-         */
-        hsv[1] = Math.max(hsv[1], 0.42f);
-
-        boolean darkBackground = relativeLuminance(background) < 0.42;
-
-        if (darkBackground) {
-            hsv[2] = Math.max(hsv[2], 0.78f);
-        } else {
-            hsv[2] = Math.min(hsv[2], 0.46f);
-        }
-
-        int candidate = Color.HSVToColor(hsv);
-
-        /*
-         * Guarantee that the accent remains distinguishable from the page.
-         */
-        return ensureContrast(
-                candidate,
-                background,
-                contrastTarget,
-                3.0
-        );
     }
 
     private static int bestTextColor(int background) {
         int lightText = 0xFFF8FAFC;
         int darkText = 0xFF101418;
 
-        double lightContrast =
-                contrastRatio(lightText, background);
-        double darkContrast =
-                contrastRatio(darkText, background);
+        double lightContrast = contrastRatio(lightText, background);
+        double darkContrast = contrastRatio(darkText, background);
 
-        return lightContrast >= darkContrast
-                ? lightText
-                : darkText;
+        return lightContrast >= darkContrast ? lightText : darkText;
     }
 
-    private static int ensureContrast(
-            int foreground,
-            int background,
-            int contrastTarget,
-            double minimumRatio
-    ) {
+    private static int ensureContrast(int foreground, int background, int contrastTarget, double minimumRatio) {
         int result = foreground;
 
-        /*
-         * Gradually pull the color toward the selected high-contrast target.
-         */
-        for (int i = 0;
-             i < 20
-                     && contrastRatio(result, background) < minimumRatio;
-             i++) {
+        for (int i = 0; i < 20 && contrastRatio(result, background) < minimumRatio; i++) {
             result = blendColors(result, contrastTarget, 0.10f);
         }
 
@@ -2278,23 +1426,187 @@ public class ThemeHook extends SpotifyHook {
         double green = linearColorComponent(Color.green(color) / 255.0);
         double blue = linearColorComponent(Color.blue(color) / 255.0);
 
-        return 0.2126 * red
-                + 0.7152 * green
-                + 0.0722 * blue;
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
     }
 
     private static double linearColorComponent(double component) {
-        return component <= 0.04045
-                ? component / 12.92
-                : Math.pow(
-                (component + 0.055) / 1.055,
-                2.4
-        );
+        return component <= 0.04045 ? component / 12.92 : Math.pow((component + 0.055) / 1.055, 2.4);
     }
 
-    /**
-     * Compose's sRGB Color representation stores ARGB in the upper 32 bits.
-     */
+    private int resourceId(String type, String name) {
+        int identifier = context.getResources().getIdentifier(name, type, context.getPackageName());
+        if (identifier == 0) throw new IllegalStateException("Missing Spotify resource " + type + "/" + name);
+        return identifier;
+    }
+
+    private static List<Field> getInstanceFields(Class<?> type) {
+        List<Field> fields = new ArrayList<>();
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            for (Field field : current.getDeclaredFields()) {
+                if (!Modifier.isStatic(field.getModifiers())) {
+                    field.setAccessible(true);
+                    fields.add(field);
+                }
+            }
+        }
+        return fields;
+    }
+
+    private static Object getInstanceFieldValue(Object object, Class<?> fieldType) throws Throwable {
+        for (Field field : getInstanceFields(object.getClass())) {
+            if (field.getType() == fieldType || (!fieldType.isPrimitive() && fieldType.isAssignableFrom(field.getType()))) return field.get(object);
+        }
+        return null;
+    }
+
+    private static Object getOnlyObjectFieldValue(Object object) throws Throwable {
+        Object result = null;
+        for (Field field : getInstanceFields(object.getClass())) {
+            if (field.getType().isPrimitive()) continue;
+            Object value = field.get(object);
+            if (value == null) continue;
+            if (result != null) throw new IllegalStateException("Expected one object field in " + object.getClass());
+            result = value;
+        }
+        return result;
+    }
+
+    private static Object getConstructorField(Object object, int parameterIndex, int parameterCount) {
+        try {
+            Constructor<?> matched = null;
+            for (Constructor<?> constructor : object.getClass().getDeclaredConstructors()) {
+                if (constructor.getParameterCount() == parameterCount) {
+                    if (matched != null) throw new IllegalStateException("Multiple " + parameterCount + "-argument constructors in " + object.getClass());
+                    matched = constructor;
+                }
+            }
+            if (matched == null) throw new IllegalStateException("No " + parameterCount + "-argument constructor in " + object.getClass());
+            Object value = getInstanceFieldValue(object, matched.getParameterTypes()[parameterIndex]);
+            if (value == null) throw new IllegalStateException("Could not map constructor parameter " + parameterIndex + " in " + object.getClass());
+            return value;
+        } catch (Throwable throwable) {
+            throw new IllegalStateException(throwable);
+        }
+    }
+
+    private static int findEncoreBaseColor(Object backgrounds) {
+        try {
+            for (Field field : getInstanceFields(backgrounds.getClass())) {
+                if (field.getType() != long.class) continue;
+                int color = unpackColor(field.getLong(backgrounds));
+                if (color == 0xFF121212 || color == 0xFF1F1F1F || color == 0x1AFFFFFF || color == 0xFF1ED760) return color;
+            }
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
+        return 0;
+    }
+
+    private static boolean hasPackedColor(Object object, int color) {
+        try {
+            for (Field field : getInstanceFields(object.getClass())) {
+                if (field.getType() == long.class && unpackColor(field.getLong(object)) == color) return true;
+            }
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
+        return false;
+    }
+
+    private static View findRootViewWithId(Object object, int id, int depth) {
+        return findRootViewWithId(object, id, depth, new IdentityHashMap<>());
+    }
+
+    private static View findRootViewWithId(Object object, int id, int depth, IdentityHashMap<Object, Boolean> visited) {
+        if (object == null || visited.put(object, Boolean.TRUE) != null) return null;
+        if (object instanceof View) {
+            View view = (View) object;
+            if (view.findViewById(id) != null) {
+                View root = view;
+                ViewParent parent = root.getParent();
+                while (parent instanceof View) {
+                    root = (View) parent;
+                    parent = root.getParent();
+                }
+                return root;
+            }
+        }
+        if (depth == 0) return null;
+        try {
+            for (Field field : getInstanceFields(object.getClass())) {
+                if (field.getType().isPrimitive()) continue;
+                Object value = field.get(object);
+                if (value == null || value instanceof Class || value instanceof String || value instanceof Number || value instanceof Collection || value instanceof Map) continue;
+                View root = findRootViewWithId(value, id, depth - 1, visited);
+                if (root != null) return root;
+            }
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
+        return null;
+    }
+
+    private static Map<?, ?> findMapWithKey(Object object, String key, int depth, IdentityHashMap<Object, Boolean> visited) {
+        if (object == null || visited.put(object, Boolean.TRUE) != null) return null;
+        if (object instanceof Map) return ((Map<?, ?>) object).containsKey(key) ? (Map<?, ?>) object : null;
+        if (depth == 0 || object instanceof Class || object instanceof String || object instanceof Number || object instanceof Boolean || object instanceof Character || object instanceof Context || object instanceof View || object.getClass().isEnum()) return null;
+        if (object instanceof Collection) {
+            for (Object value : (Collection<?>) object) {
+                Map<?, ?> found = findMapWithKey(value, key, depth - 1, visited);
+                if (found != null) return found;
+            }
+            return null;
+        }
+        try {
+            for (Field field : getInstanceFields(object.getClass())) {
+                if (field.getType().isPrimitive()) continue;
+                Map<?, ?> found = findMapWithKey(field.get(object), key, depth - 1, visited);
+                if (found != null) return found;
+            }
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
+        return null;
+    }
+
+    private static Map<?, ?> findCurrentTrackMetadata(Object event, Class<?> playerStateClass, Class<?> contextTrackClass) {
+        Object playerState = findObjectOfType(event, playerStateClass, 3, new IdentityHashMap<>());
+        if (playerState == null) return null;
+        Object currentTrack = findCurrentTrackFromAccessors(playerState, contextTrackClass);
+        if (currentTrack == null) currentTrack = findObjectOfType(playerState, contextTrackClass, 3, new IdentityHashMap<>());
+        if (currentTrack == null) return null;
+        return findMapWithKey(currentTrack, "image_url", 2, new IdentityHashMap<>());
+    }
+
+    private static Object findCurrentTrackFromAccessors(Object playerState, Class<?> contextTrackClass) {
+        for (Method method : playerState.getClass().getMethods()) {
+            if (Modifier.isStatic(method.getModifiers()) || method.getParameterCount() != 0 || method.getReturnType().isPrimitive() || method.getReturnType() == String.class || Collection.class.isAssignableFrom(method.getReturnType()) || Map.class.isAssignableFrom(method.getReturnType())) continue;
+            try {
+                method.setAccessible(true);
+                Object currentTrack = findObjectOfType(method.invoke(playerState), contextTrackClass, 2, new IdentityHashMap<>());
+                if (currentTrack != null) return currentTrack;
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static Object findObjectOfType(Object object, Class<?> wantedType, int depth, IdentityHashMap<Object, Boolean> visited) {
+        if (object == null || visited.put(object, Boolean.TRUE) != null) return null;
+        if (wantedType.isInstance(object)) return object;
+        if (depth == 0 || object instanceof Class || object instanceof String || object instanceof Number || object instanceof Boolean || object instanceof Character || object instanceof Context || object instanceof View || object instanceof Collection || object instanceof Map || object.getClass().isEnum()) return null;
+        try {
+            for (Field field : getInstanceFields(object.getClass())) {
+                if (field.getType().isPrimitive()) continue;
+                Object found = findObjectOfType(field.get(object), wantedType, depth - 1, visited);
+                if (found != null) return found;
+            }
+        } catch (Throwable throwable) {
+            XposedBridge.log(throwable);
+        }
+        return null;
+    }
+
     private static long packColor(int argb) {
         return (argb & 0xFFFFFFFFL) << 32;
     }
@@ -2344,7 +1656,6 @@ public class ThemeHook extends SpotifyHook {
         DECORATIVE = accent;
         DECORATIVE_SUBDUED = blendColors(background, accent, 0.42f);
 
-        XposedBridge.log(TAG + "Generated " + mode + " theme from #" + String.format("%08X", baseColor));
         onPaletteChanged(classLoader);
         recreateVisibleActivity();
     }

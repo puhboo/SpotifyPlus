@@ -20,20 +20,20 @@ import com.lenerd46.spotifyplus.References;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import kotlin.jvm.functions.Function0;
 import okhttp3.*;
 import org.luckypray.dexkit.query.FindClass;
 import org.luckypray.dexkit.query.FindField;
 import org.luckypray.dexkit.query.FindMethod;
 import org.luckypray.dexkit.query.matchers.*;
 
-import java.lang.ref.WeakReference;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -56,181 +56,67 @@ public class NewContextMenuHook extends SpotifyHook {
     private static volatile Object cachedSpotifyPlusLyricsTrf = null;
     private static final Map<Object, NextUpAction> nextUpActions = Collections.synchronizedMap(new WeakHashMap<>());
     private static final Set<Class<?>> nextUpClickHookClasses = Collections.synchronizedSet(new HashSet<>());
+    private static final Map<Class<?>, Method> menuItemViewModelAccessors = new ConcurrentHashMap<>();
 
     private static Class<?> interfaceClass;
+    private static Constructor<?> directTextTitleConstructor;
 
     @Override
     protected void hook() {
         try {
             // We have to do it here as well as down there somewhere, otherwise Spotify won't show it in the now playing context menu for some reason?
             SpotifyTitleOverride.install();
-            SpotifyTitleOverride.overrideSpotifyStringById(0x7f131428, "Open in Last.fm");
 
-            // Header
-            var classesThing = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().className("com.spotify.localfiles.mediastoreimpl.LocalFilesProperties$dataProps$2")));
-
-            Class<?> kyx0 = classesThing.get(0).getInstance(lpparm.classLoader).getInterfaces()[0];
-
-//            Class<?> gff = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().methods(MethodsMatcher.create().count(4)
-//                    .add(MethodMatcher.create().returnType(boolean.class).name("equals").paramCount(1))
-//                    .add(MethodMatcher.create().returnType(int.class).name("hashCode").paramCount(0).usingNumbers(31, 0))
-//            ).fields(FieldsMatcher.create().count(3)
-//                    .add(FieldMatcher.create().type(String.class))
-//                    .add(FieldMatcher.create().type(String.class))
-//                    .add(FieldMatcher.create().type(kyx0))
-//            ))).get(0).getInstance(lpparm.classLoader);
-            boolean newContextMenu;
-
-            var jffClasses = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().methods(MethodsMatcher.create().count(3)
-                    .add(MethodMatcher.create().returnType(boolean.class).name("equals").paramCount(1))
-                    .add(MethodMatcher.create().returnType(int.class).name("hashCode").paramCount(0).usingNumbers(31, 0))
-                    .add(MethodMatcher.create().name("<init>").paramCount(4))
-            ).fields(FieldsMatcher.create().count(3)
-                    .add(FieldMatcher.create().type(String.class))
-                    .add(FieldMatcher.create().type(kyx0))
-            )));
-
-            if (jffClasses.isEmpty()) {
-                jffClasses = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().methods(MethodsMatcher.create().count(3)
-                        .add(MethodMatcher.create().returnType(boolean.class).name("equals").paramCount(1))
-                        .add(MethodMatcher.create().returnType(int.class).name("hashCode").paramCount(0).usingNumbers(31, 0))
-                        .add(MethodMatcher.create().name("<init>").paramCount(3))
-                ).fields(FieldsMatcher.create().count(2)
-                        .add(FieldMatcher.create().type(Function0.class))
-                )));
-
-                newContextMenu = true;
-            } else {
-                newContextMenu = false;
+            var contextMenuClassResults = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("ContextMenuViewModel cannot contain items with duplicate itemResId. id=")));
+            List<Class<?>> contextMenuClasses = new ArrayList<>();
+            for (var classData : contextMenuClassResults) {
+                Class<?> candidate = classData.getInstance(lpparm.classLoader);
+                if (Arrays.stream(candidate.getDeclaredConstructors()).anyMatch(constructor -> constructor.getParameterCount() == 3 && List.class.isAssignableFrom(constructor.getParameterTypes()[1]) && constructor.getParameterTypes()[2] == boolean.class)) contextMenuClasses.add(candidate);
             }
-
-            Class<?> jffClass = jffClasses.get(0).getInstance(lpparm.classLoader);
-
-            var c8fClasses = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("mute_playback", "resume_pause_button", "hit", "item_to_be_resumed", "seek_bar")));
-
-            if (newContextMenu) {
-                c8fClasses = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("block_confirmation_dialog", "request_received_view", "ui_reveal", "reject_confirmation_dialog")));
-            }
-
-            final Class<?> c8f = c8fClasses.get(0).getInstance(lpparm.classLoader);
-
-//            XposedBridge.log("[SpotifyPlus] Found " + jffClasses.size() + " classes");
-//            jffClasses.forEach(x -> XposedBridge.log("[SpotifyPlus] " + x.getName()));
-
-            org.luckypray.dexkit.result.ClassDataList finalC8fClasses = c8fClasses;
-            XposedBridge.log("[SpotifyPlus] c8f: " + c8f.getName());
-            XposedBridge.hookAllMethods(c8f, "invoke", new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            int branch = bridge.findField(FindField.create().searchInClass(finalC8fClasses).matcher(FieldMatcher.create().type(int.class))).get(0).getFieldInstance(lpparm.classLoader).getInt(param.thisObject);
-//                            if (branch != 19) return;
-
-                            // These variable names are the class names in version 9.1.24.1739
-                            Object jff = param.args[0];
-                            if (jff == null || jff.getClass() != jffClass) return;
-
-                            SharedPreferences ref = References.getPreferences();
-                            String username = ref.getString("last_fm_username", "null");
-                            if (username.equals("null")) return;
-
-                            Object gff = XposedHelpers.getObjectField(jff, newContextMenu ? "a" : "b"); // It will probably stay as b, right? (I guess not sadly)
-                            if (gff == null) {
-                                XposedBridge.log("[SpotifyPlus] It did not stay as b :(");
-                            }
-
-                            String title = (String) XposedHelpers.getObjectField(gff, "a");
-                            String subtitleTextFull = (String) XposedHelpers.getObjectField(gff, "c");
-
-                            if (subtitleTextFull.contains("scrobbles")) {
-                                return;
-                            }
-
-                            String artist = subtitleTextFull.split(" • ")[0];
-
-                            trackTitle = title;
-                            trackArtist = artist;
-
-                            WeakReference<String> oldSubtitle = new WeakReference<>(subtitleTextFull);
-                            WeakReference<Object> subtitleObject = new WeakReference<>(gff);
-
-                            Activity activity = References.currentActivity;
-                            OkHttpClient client = new OkHttpClient();
-                            Request request;
-
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {                                      //  Yeah I know this is bad, but whatever
-                                request = new Request.Builder().url("https://ws.audioscrobbler.com/2.0/?method=track.getInfo&api_key=3713c2e0b7493e945555b7f52dc4232e&artist=" + URLEncoder.encode(artist, StandardCharsets.UTF_8) + "&track=" + URLEncoder.encode(title, StandardCharsets.UTF_8) + "&format=json&user=" + URLEncoder.encode(username, StandardCharsets.UTF_8)).build();
-                            } else {
-                                request = new Request.Builder().url("https://ws.audioscrobbler.com/2.0/?method=track.getInfo&api_key=3713c2e0b7493e945555b7f52dc4232e&artist=" + URLEncoder.encode(artist) + "&track=" + URLEncoder.encode(title) + "&format=json&user=" + URLEncoder.encode(username)).build();
-                            }
-
-                            // Probably not the best way to do this, but you know what, it works
-                            // We're blocking the main UI thread here, which Android explicitly asks you not to do
-                            CountDownLatch latch = new CountDownLatch(1);
-                            AtomicReference<String> resultRef = new AtomicReference<>();
-                            AtomicReference<Exception> exceptionRef = new AtomicReference<>();
-
-                            new Thread(() -> {
-                                try (Response response = client.newCall(request).execute()) {
-                                    ResponseBody body = response.body();
-                                    resultRef.set(body != null ? body.string() : null);
-                                } catch (Exception e) {
-                                    exceptionRef.set(e);
-                                } finally {
-                                    latch.countDown();
-                                }
-                            }).start();
-                            try {
-                                latch.await();
-
-                                if (exceptionRef.get() != null) {
-                                    throw new RuntimeException(exceptionRef.get());
-                                }
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                            }
-
-                            if (resultRef.get() != null) {
-                                try {
-                                    JsonObject root = JsonParser.parseString(resultRef.get()).getAsJsonObject();
-                                    String scrobbles = root.getAsJsonObject("track").get("userplaycount").getAsString();
-
-                                    Object subtitle = subtitleObject.get();
-                                    String oldSubtitleText = oldSubtitle.get();
-
-                                    XposedHelpers.setObjectField(subtitle, "c", oldSubtitleText + " • " + scrobbles + " scrobbles");
-                                } catch (Exception e) {
-                                    XposedBridge.log("[SpotifyPlus] Failed to fetch scrobbles");
-                                    XposedBridge.log("[SpotifyPlus] " + e);
-
-                                    Handler handler = new Handler(Looper.getMainLooper());
-                                    handler.post(() -> Toast.makeText(activity, "Failed to fetch scrobbles", Toast.LENGTH_SHORT).show());
-                                }
-                            } else {
-                                XposedBridge.log("[SpotifyPlus] Failed to fetch scrobbles");
-
-                                Handler handler = new Handler(Looper.getMainLooper());
-                                handler.post(() -> Toast.makeText(activity, "Failed to fetch scrobbles", Toast.LENGTH_SHORT).show());
-                            }
-                        }
-                    }
-            );
+            if (contextMenuClasses.size() != 1) throw new IllegalStateException("[NewContextMenuHook/DexKit] Expected one class using the ContextMenuViewModel duplicate-item diagnostic and declaring a (header, List, boolean) constructor but found " + contextMenuClasses.size() + ": " + contextMenuClasses.stream().map(Class::getName).collect(Collectors.joining(", ")));
+            Class<?> headerObject = contextMenuClasses.get(0);
+            List<Constructor<?>> contextMenuConstructors = Arrays.stream(headerObject.getDeclaredConstructors()).filter(constructor -> constructor.getParameterCount() == 3 && List.class.isAssignableFrom(constructor.getParameterTypes()[1]) && constructor.getParameterTypes()[2] == boolean.class).collect(Collectors.toList());
+            if (contextMenuConstructors.size() != 1) throw new IllegalStateException("[NewContextMenuHook/DexKit] Expected one (header, List, boolean) constructor in the ContextMenuViewModel class " + headerObject.getName() + " but found " + contextMenuConstructors.size() + ": " + contextMenuConstructors.stream().map(Constructor::toString).collect(Collectors.joining(", ")));
+            Constructor<?> contextMenuConstructor = contextMenuConstructors.get(0);
+            Class<?> headerClass = contextMenuConstructor.getParameterTypes()[0];
+            List<Constructor<?>> headerConstructors = Arrays.stream(headerClass.getDeclaredConstructors()).filter(constructor -> constructor.getParameterCount() == 3 && constructor.getParameterTypes()[0] == String.class && !constructor.getParameterTypes()[1].isPrimitive() && constructor.getParameterTypes()[2] == String.class).collect(Collectors.toList());
+            if (headerConstructors.size() != 1) throw new IllegalStateException("[NewContextMenuHook/DexKit] Expected the ContextMenuViewModel header type " + headerClass.getName() + " to have one (String, artwork, String) constructor but found " + headerConstructors.size() + ": " + headerConstructors.stream().map(Constructor::toString).collect(Collectors.joining(", ")));
+            List<Field> headerTextFields = Arrays.stream(headerClass.getDeclaredFields()).filter(field -> !Modifier.isStatic(field.getModifiers()) && field.getType() == String.class).collect(Collectors.toList());
+            if (headerTextFields.size() != 2) throw new IllegalStateException("[NewContextMenuHook/DexKit] Expected the ContextMenuViewModel header type " + headerClass.getName() + " to have two String fields for title and subtitle but found " + headerTextFields.size() + ": " + headerTextFields.stream().map(Field::toString).collect(Collectors.joining(", ")));
+            Field headerTitleField = headerTextFields.get(0);
+            Field headerSubtitleField = headerTextFields.get(1);
+            headerTitleField.setAccessible(true);
+            headerSubtitleField.setAccessible(true);
 
             // Buttons
-
-            Class<?> headerObject = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("ContextMenuViewModel cannot contain items with duplicate itemResId. id="))).get(0).getInstance(lpparm.classLoader);
             Class<?> radioButtonClass = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingStrings("audiobook_supplementary_content"))).get(0).getInstance(lpparm.classLoader);
-            XposedBridge.hookAllConstructors(headerObject, new XC_MethodHook() {
+            Method radioButtonViewModelAccessor = findMenuItemViewModelAccessor(radioButtonClass);
+            XposedBridge.hookMethod(contextMenuConstructor, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     try {
                         List<?> list = (List<?>) param.args[1];
                         if (list == null) return;
+                        String contextTrackUri = getSingleTrackUri(findMenuItem(list, "queue_track"));
+                        trackTitle = "";
+                        trackArtist = "";
+                        if (contextTrackUri != null) updateLastFmHeader(param.args[0], headerTitleField, headerSubtitleField, contextTrackUri);
 
                         if (cachedOriginalViewModel == null && list.size() >= 4) {
                             Object probablyAddToPlaylist = list.get(3);
-                            cachedOriginalViewModel = probablyAddToPlaylist.getClass().getMethod("getViewModel").invoke(probablyAddToPlaylist);
+                            cachedOriginalViewModel = getMenuItemViewModel(probablyAddToPlaylist);
 
-                            interfaceClass = Arrays.stream(cachedOriginalViewModel.getClass().getDeclaredFields()).filter(x -> x.getName().equals("d")).collect(Collectors.toList()).get(0).get(cachedOriginalViewModel).getClass().getInterfaces()[0];
+                            List<Field> viewModelFields = Arrays.stream(cachedOriginalViewModel.getClass().getDeclaredFields()).filter(field -> !Modifier.isStatic(field.getModifiers())).collect(Collectors.toList());
+                            Class<?> titleType = viewModelFields.get(1).getType();
+                            List<Constructor<?>> directTextTitleConstructors = Arrays.stream(cachedOriginalViewModel.getClass().getDeclaredConstructors()).flatMap(constructor -> Arrays.stream(constructor.getParameterTypes())).filter(parameterType -> parameterType != titleType && titleType.isAssignableFrom(parameterType)).distinct().map(parameterType -> getStringConstructor(parameterType)).filter(Objects::nonNull).collect(Collectors.toList());
+                            if (directTextTitleConstructors.size() != 1) throw new IllegalStateException("[NewContextMenuHook] Expected the menu view-model constructors to reference one direct-text implementation of " + titleType.getName() + " but found " + directTextTitleConstructors.size() + ": " + directTextTitleConstructors.stream().map(constructor -> constructor.getDeclaringClass().getName()).collect(Collectors.joining(", ")));
+                            directTextTitleConstructor = directTextTitleConstructors.get(0);
+                            directTextTitleConstructor.setAccessible(true);
+                            Field iconField = viewModelFields.get(3);
+                            iconField.setAccessible(true);
+                            Object icon = iconField.get(cachedOriginalViewModel);
+                            if (icon == null || icon.getClass().getInterfaces().length == 0) throw new IllegalStateException("[NewContextMenuHook] Could not identify the icon interface from " + cachedOriginalViewModel.getClass().getName());
+                            interfaceClass = icon.getClass().getInterfaces()[0];
 
 //                            Object trfObject = XposedHelpers.getObjectField(list.get(1).getClass().getMethod("getViewModel").invoke(list.get(1)), "d");
 //                            trfClass = trfObject.getClass();
@@ -241,12 +127,8 @@ public class NewContextMenuHook extends SpotifyHook {
 //                            }
                         }
 
-                        boolean hasLastFmItem = list.stream().anyMatch(item -> {
-                            if (item == null || item.getClass() != radioButtonClass) return false;
-                            Object markerValue = XposedHelpers.getObjectField(item, "c");
-                            return markerValue.equals(LAST_FM_MARKER);
-                        });
-                        boolean hasLyricsItem = list.stream().anyMatch(item -> item != null && item.getClass() == radioButtonClass && LYRICS_MARKER.equals(String.valueOf(XposedHelpers.getObjectField(item, "c"))));
+                        boolean hasLastFmItem = hasMenuItem(list, LAST_FM_MARKER);
+                        boolean hasLyricsItem = hasMenuItem(list, LYRICS_MARKER);
 
                         ArrayList<Object> newList = new ArrayList<>(list);
                         boolean changed = false;
@@ -263,7 +145,7 @@ public class NewContextMenuHook extends SpotifyHook {
                             }
                         }
 
-                        if (!hasLastFmItem) {
+                        if (contextTrackUri != null && !hasLastFmItem) {
                             Context context = AndroidAppHelper.currentApplication();
                             if (context != null) {
                                 Object radioButton = XposedHelpers.newInstance(radioButtonClass, context, LAST_FM_MARKER);
@@ -290,11 +172,11 @@ public class NewContextMenuHook extends SpotifyHook {
                 }
             });
 
-            XposedBridge.hookAllMethods(radioButtonClass, "getViewModel", new XC_MethodHook() {
+            XposedBridge.hookMethod(radioButtonViewModelAccessor, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    String marker = XposedHelpers.getObjectField(param.thisObject, "c").toString();
-                    if (!marker.equals(LAST_FM_MARKER) && !marker.equals(LYRICS_MARKER)) return;
+                    String marker = getSpotifyPlusItemMarker(param.thisObject);
+                    if (marker == null) return;
 
                     Object viewModel = null;
 
@@ -304,43 +186,8 @@ public class NewContextMenuHook extends SpotifyHook {
                         viewModel = cachedViewModel;
                     } else {
                         if (cachedOriginalViewModel == null) return;
-                        Class<?> pgf = cachedOriginalViewModel.getClass();
 
-//                        Class<?> pgf = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().fields(FieldsMatcher.create().count(11)
-//                                .add(FieldMatcher.create().type(String.class))
-//                                .add(FieldMatcher.create().type(boolean.class))
-//                                .add(FieldMatcher.create().type(boolean.class))
-//                                .add(FieldMatcher.create().type(boolean.class))
-//                                .add(FieldMatcher.create().type(boolean.class))
-//                                .add(FieldMatcher.create().type(boolean.class))
-//                        ).methods(MethodsMatcher.create().countMin(4)
-//                                .add(MethodMatcher.create().name("hashCode").returnType(int.class).usingNumbers(31, 0, 1237))
-//                        ))).get(0).getInstance(lpparm.classLoader);
-
-                        int titleId = marker.equals(LYRICS_MARKER) ? 0x7f131128 : 0x7f131428;
-                        if (marker.equals(LAST_FM_MARKER)) {
-                            SpotifyTitleOverride.install();
-                            SpotifyTitleOverride.overrideSpotifyStringById(titleId, "Open in Last.fm");
-                        }
-
-                        Object oldTitleObject = XposedHelpers.getObjectField(cachedOriginalViewModel, "b");
-                        if (oldTitleObject == null) return;
-
-                        Object title = XposedHelpers.newInstance(oldTitleObject.getClass(), titleId);
-                        Object template = cachedOriginalViewModel;
-                        if (template == null) return;
-
-                        Constructor<?> ctor = Arrays.stream(pgf.getDeclaredConstructors()).filter(x -> x.getParameterCount() == 10 && x.getParameterTypes()[x.getParameterCount() - 1] == int.class).collect(Collectors.toList()).get(0);
-                        Class<?>[] parameters = ctor.getParameterTypes();
-
-                        // I don't know what button we cached for sure, so we look for these fields reflectively
-                        Object hgf = getField(template, parameters[3]);
-                        Object y6y0 = getField(template, parameters[4]);
-                        Object h0y0 = getField(template, parameters[8]);
-
-                        Boolean[] booleans = getFirstBooleans(template);
-
-                        viewModel = ctor.newInstance(marker, title, null, hgf, y6y0, booleans[0], booleans[1], booleans[2], h0y0, marker.equals(LYRICS_MARKER) ? 1989 : 1988);
+                        viewModel = cloneMenuViewModel(cachedOriginalViewModel, marker, marker.equals(LYRICS_MARKER) ? "Lyrics" : "Open in Last.fm");
 
                         if (marker.equals(LYRICS_MARKER)) cachedLyricsViewModel = viewModel;
                         else cachedViewModel = viewModel;
@@ -385,7 +232,9 @@ public class NewContextMenuHook extends SpotifyHook {
             // Icon
             Class<?> iconClass = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().usingEqStrings("ContextMenuItem"))).get(0).getInstance(lpparm.classLoader);
             var methods = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(bridge.getClassData(iconClass))).matcher(MethodMatcher.create().params(ParametersMatcher.create().count(6))));
-            Method method = methods.get(0).getMethodInstance(lpparm.classLoader);
+            var iconRendererMethods = methods.stream().filter(methodData -> methodData.isMethod() && methodData.getReturnTypeName().equals("void") && Modifier.isStatic(methodData.getModifiers())).collect(Collectors.toList());
+            if (iconRendererMethods.size() != 1) throw new IllegalStateException("[NewContextMenuHook/DexKit] Expected one static void six-parameter ContextMenuItem icon renderer in " + iconClass.getName() + " but found " + iconRendererMethods.size() + ": " + iconRendererMethods.stream().map(methodData -> methodData.getDescriptor()).collect(Collectors.joining(", ")) + "; all six-parameter members: " + methods.stream().map(methodData -> methodData.getDescriptor()).collect(Collectors.joining(", ")));
+            Method method = iconRendererMethods.get(0).getMethodInstance(lpparm.classLoader);
 
             XposedBridge.hookMethod(method, new XC_MethodHook() {
                         @Override
@@ -405,40 +254,96 @@ public class NewContextMenuHook extends SpotifyHook {
             );
 
             var uweClasses = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().fields(FieldsMatcher.create().count(2).add(FieldMatcher.create().type(int.class))).usingStrings("CreateMenuItemElement")));
-            Class<?> uweClass = uweClasses.get(0).getInstance(lpparm.classLoader);
-
-            XposedBridge.hookAllMethods(uweClass, "invoke", new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    try {
-                        int branch = bridge.findField(FindField.create().searchInClass(uweClasses).matcher(FieldMatcher.create().type(int.class))).get(0).getFieldInstance(lpparm.classLoader).getInt(param.thisObject);
-                        if (branch != 10) return;
-
-                        if (param.args.length < 2) return;
-                        Object obj2 = param.args[1]; // psf in case 10
-                        String marker = getSpotifyPlusRowMarker(obj2);
-                        if (marker == null) return;
-
-                        pushSpotifyPlusRender(marker);
-                        param.setObjectExtra("spotifyplus_row_render", Boolean.TRUE);
-                    } catch (Throwable t) {
-                        XposedBridge.log("[SpotifyPlus] uwe invoke before failed: " + t);
-                    }
-                }
-
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    try {
-                        if (Boolean.TRUE.equals(param.getObjectExtra("spotifyplus_row_render"))) {
-                            popSpotifyPlusRender();
+            if (uweClasses.isEmpty()) {
+                XposedBridge.log("[SpotifyPlus] Context-menu row-render marker fingerprint is unavailable; the custom view-model icons remain installed directly.");
+            } else {
+                Class<?> uweClass = uweClasses.get(0).getInstance(lpparm.classLoader);
+                XposedBridge.hookAllMethods(uweClass, "invoke", new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            int branch = bridge.findField(FindField.create().searchInClass(uweClasses).matcher(FieldMatcher.create().type(int.class))).get(0).getFieldInstance(lpparm.classLoader).getInt(param.thisObject);
+                            if (branch != 10) return;
+                            if (param.args.length < 2) return;
+                            Object obj2 = param.args[1]; // psf in case 10
+                            String marker = getSpotifyPlusRowMarker(obj2);
+                            if (marker == null) return;
+                            pushSpotifyPlusRender(marker);
+                            param.setObjectExtra("spotifyplus_row_render", Boolean.TRUE);
+                        } catch (Throwable t) {
+                            XposedBridge.log("[SpotifyPlus] uwe invoke before failed: " + t);
                         }
-                    } catch (Throwable t) {
-                        XposedBridge.log("[SpotifyPlus] uwe invoke after failed: " + t);
                     }
-                }
-            });
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            if (Boolean.TRUE.equals(param.getObjectExtra("spotifyplus_row_render"))) popSpotifyPlusRender();
+                        } catch (Throwable t) {
+                            XposedBridge.log("[SpotifyPlus] uwe invoke after failed: " + t);
+                        }
+                    }
+                });
+            }
         } catch (Exception e) {
             XposedBridge.log(e);
+        }
+    }
+
+    private void updateLastFmHeader(Object header, Field titleField, Field subtitleField, String trackUri) {
+        if (header == null || trackUri == null || !trackUri.startsWith("spotify:track:")) return;
+
+        try {
+            String title = (String) titleField.get(header);
+            String subtitleTextFull = (String) subtitleField.get(header);
+            if (title == null || title.isEmpty() || subtitleTextFull == null || subtitleTextFull.isEmpty()) return;
+
+            String artist = subtitleTextFull.split(" • ")[0];
+            trackTitle = title;
+            trackArtist = artist;
+            if (subtitleTextFull.contains("scrobbles")) return;
+
+            SharedPreferences ref = References.getPreferences();
+            String username = ref.getString("last_fm_username", "null");
+            if (username.equals("null")) return;
+
+            Activity activity = References.currentActivity;
+            OkHttpClient client = new OkHttpClient();
+            Request request;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                request = new Request.Builder().url("https://ws.audioscrobbler.com/2.0/?method=track.getInfo&api_key=3713c2e0b7493e945555b7f52dc4232e&artist=" + URLEncoder.encode(artist, StandardCharsets.UTF_8) + "&track=" + URLEncoder.encode(title, StandardCharsets.UTF_8) + "&format=json&user=" + URLEncoder.encode(username, StandardCharsets.UTF_8)).build();
+            } else {
+                request = new Request.Builder().url("https://ws.audioscrobbler.com/2.0/?method=track.getInfo&api_key=3713c2e0b7493e945555b7f52dc4232e&artist=" + URLEncoder.encode(artist) + "&track=" + URLEncoder.encode(title) + "&format=json&user=" + URLEncoder.encode(username)).build();
+            }
+
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> resultRef = new AtomicReference<>();
+            AtomicReference<Exception> exceptionRef = new AtomicReference<>();
+            new Thread(() -> {
+                try (Response response = client.newCall(request).execute()) {
+                    ResponseBody body = response.body();
+                    resultRef.set(body != null ? body.string() : null);
+                } catch (Exception e) {
+                    exceptionRef.set(e);
+                } finally {
+                    latch.countDown();
+                }
+            }).start();
+            try {
+                latch.await();
+                if (exceptionRef.get() != null) throw new RuntimeException(exceptionRef.get());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            if (resultRef.get() == null) throw new IllegalStateException("Last.fm returned no response body");
+            JsonObject root = JsonParser.parseString(resultRef.get()).getAsJsonObject();
+            String scrobbles = root.getAsJsonObject("track").get("userplaycount").getAsString();
+            subtitleField.set(header, subtitleTextFull + " • " + scrobbles + " scrobbles");
+        } catch (Exception e) {
+            XposedBridge.log("[SpotifyPlus] Failed to fetch scrobbles for " + trackUri);
+            XposedBridge.log("[SpotifyPlus] " + e);
+            Activity activity = References.currentActivity;
+            if (activity != null) new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(activity, "Failed to fetch scrobbles", Toast.LENGTH_SHORT).show());
         }
     }
 
@@ -468,31 +373,45 @@ public class NewContextMenuHook extends SpotifyHook {
             }
 
             var classes = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().addInterface(interfaceClass.getName())));
-
-            // I see no obvious way to differentiate the two, so why not try both? One of them should work
-            Class<?> firstClass = classes.get(0).getInstance(lpparm.classLoader);
-            Class<?> secondClass = firstClass.getFields()[0].getType();
-
-            for (var clazz : classes) {
-                Class<?> tryClass = clazz.getInstance(lpparm.classLoader);
-                Class<?> a = tryClass.getFields()[0].getType();
-
-                if (a.getFields()[0].getDeclaringClass() == LayerDrawable.class) {
-                    firstClass = tryClass;
-                    secondClass = a;
+            Object customIcon = null;
+            for (var classData : classes) {
+                Class<?> outerClass = classData.getInstance(lpparm.classLoader);
+                if (outerClass.isInterface() || Modifier.isAbstract(outerClass.getModifiers())) continue;
+                for (Constructor<?> outerConstructor : outerClass.getDeclaredConstructors()) {
+                    if (outerConstructor.getParameterCount() != 1) continue;
+                    Class<?> outerParameter = outerConstructor.getParameterTypes()[0];
+                    Object outerArgument = getDrawableConstructorArgument(outerParameter, drawable, layerDrawable);
+                    if (outerArgument == null) {
+                        for (Constructor<?> innerConstructor : outerParameter.getDeclaredConstructors()) {
+                            if (innerConstructor.getParameterCount() != 1) continue;
+                            Object innerArgument = getDrawableConstructorArgument(innerConstructor.getParameterTypes()[0], drawable, layerDrawable);
+                            if (innerArgument == null) continue;
+                            innerConstructor.setAccessible(true);
+                            outerArgument = innerConstructor.newInstance(innerArgument);
+                            break;
+                        }
+                    }
+                    if (outerArgument == null) continue;
+                    outerConstructor.setAccessible(true);
+                    customIcon = outerConstructor.newInstance(outerArgument);
+                    break;
                 }
+                if (customIcon != null) break;
             }
-
-            Object rsf = XposedHelpers.newInstance(secondClass, layerDrawable);
-            Object trf = XposedHelpers.newInstance(firstClass, rsf);
-
-            if (LYRICS_MARKER.equals(marker)) cachedSpotifyPlusLyricsTrf = trf;
-            else cachedSpotifyPlusTrf = trf;
-            return trf;
+            if (customIcon == null) throw new IllegalStateException("[NewContextMenuHook] Could not find a " + interfaceClass.getName() + " implementation backed by Drawable or LayerDrawable");
+            if (LYRICS_MARKER.equals(marker)) cachedSpotifyPlusLyricsTrf = customIcon;
+            else cachedSpotifyPlusTrf = customIcon;
+            return customIcon;
         } catch (Throwable t) {
             XposedBridge.log("[SpotifyPlus] Failed to create custom trf: " + t);
             return null;
         }
+    }
+
+    private Object getDrawableConstructorArgument(Class<?> parameterType, Drawable drawable, LayerDrawable layerDrawable) {
+        if (!Drawable.class.isAssignableFrom(parameterType)) return null;
+        if (parameterType.isInstance(drawable)) return drawable;
+        return parameterType.isInstance(layerDrawable) ? layerDrawable : null;
     }
 
     private static void pushSpotifyPlusRender(String marker) {
@@ -516,16 +435,95 @@ public class NewContextMenuHook extends SpotifyHook {
     }
 
     private static String getSpotifyPlusRowMarker(Object obj) {
-        if (obj == null) return null;
+        return findSpotifyPlusMarker(obj, 2, new IdentityHashMap<>());
+    }
+
+    private static String findSpotifyPlusMarker(Object value, int remainingDepth, IdentityHashMap<Object, Boolean> visited) {
+        if (LAST_FM_MARKER.equals(value) || LYRICS_MARKER.equals(value)) return (String) value;
+        if (value == null || remainingDepth == 0 || visited.put(value, Boolean.TRUE) != null) return null;
+        Class<?> valueClass = value.getClass();
+        if (valueClass.isPrimitive() || valueClass.isEnum() || valueClass.isArray() || valueClass.getName().startsWith("java.") || valueClass.getName().startsWith("android.") || valueClass.getName().startsWith("kotlin.")) return null;
+        for (Class<?> type = valueClass; type != null && type != Object.class; type = type.getSuperclass()) {
+            for (Field field : type.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) || field.getType().isPrimitive()) continue;
+                try {
+                    field.setAccessible(true);
+                    String marker = findSpotifyPlusMarker(field.get(value), remainingDepth - 1, visited);
+                    if (marker != null) return marker;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String getSpotifyPlusItemMarker(Object item) {
+        if (item == null) return null;
+        for (Class<?> type = item.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+            for (Field field : type.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) || field.getType().isPrimitive()) continue;
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(item);
+                    if (LAST_FM_MARKER.equals(value) || LYRICS_MARKER.equals(value)) return (String) value;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private Method findMenuItemViewModelAccessor(Class<?> itemClass) throws NoSuchMethodException {
+        Method cached = menuItemViewModelAccessors.get(itemClass);
+        if (cached != null) return cached;
+        List<Method> candidates = Arrays.stream(itemClass.getMethods()).filter(method -> !Modifier.isStatic(method.getModifiers()) && method.getParameterCount() == 0 && method.getDeclaringClass() != Object.class && !method.getReturnType().isPrimitive() && method.getReturnType() != String.class && Arrays.stream(method.getReturnType().getDeclaredFields()).anyMatch(field -> !Modifier.isStatic(field.getModifiers()) && field.getType() == String.class)).collect(Collectors.toList());
+        Method accessor = candidates.stream().filter(method -> method.getName().equals("getViewModel")).findFirst().orElse(candidates.size() == 1 ? candidates.get(0) : null);
+        if (accessor == null) throw new NoSuchMethodException("[NewContextMenuHook] Could not identify the view-model accessor on " + itemClass.getName() + "; candidates: " + candidates.stream().map(Method::toString).collect(Collectors.joining(", ")));
+        accessor.setAccessible(true);
+        menuItemViewModelAccessors.put(itemClass, accessor);
+        return accessor;
+    }
+
+    private Object getMenuItemViewModel(Object item) throws ReflectiveOperationException {
+        if (item == null) return null;
+        return findMenuItemViewModelAccessor(item.getClass()).invoke(item);
+    }
+
+    private Constructor<?> getStringConstructor(Class<?> type) {
         try {
-            Object dsf = XposedHelpers.getObjectField(obj, "a"); // psf.a
-            if (dsf == null) return null;
-            Object key = XposedHelpers.getObjectField(dsf, "a"); // dsf.a
-            String marker = String.valueOf(key);
-            return LAST_FM_MARKER.equals(marker) || LYRICS_MARKER.equals(marker) ? marker : null;
-        } catch (Throwable ignored) {
+            return type.getDeclaredConstructor(String.class);
+        } catch (NoSuchMethodException ignored) {
             return null;
         }
+    }
+
+    private Object cloneMenuViewModel(Object template, String marker, String title) throws ReflectiveOperationException {
+        List<Field> fields = Arrays.stream(template.getClass().getDeclaredFields()).filter(field -> !Modifier.isStatic(field.getModifiers())).collect(Collectors.toList());
+        Class<?>[] fieldTypes = fields.stream().map(Field::getType).toArray(Class<?>[]::new);
+        Constructor<?> constructor = Arrays.stream(template.getClass().getDeclaredConstructors()).filter(candidate -> Arrays.equals(candidate.getParameterTypes(), fieldTypes)).findFirst().orElseThrow(() -> new NoSuchMethodException("[NewContextMenuHook] No primary data-class constructor matches the fields of " + template.getClass().getName()));
+        Object[] values = new Object[fields.size()];
+        boolean markerReplaced = false;
+        boolean titleReplaced = false;
+        boolean iconReplaced = false;
+        for (int i = 0; i < fields.size(); i++) {
+            Field field = fields.get(i);
+            field.setAccessible(true);
+            Object value = field.get(template);
+            if (i == 0 && field.getType() == String.class) {
+                value = marker;
+                markerReplaced = true;
+            } else if (i == 1 && directTextTitleConstructor != null && field.getType().isAssignableFrom(directTextTitleConstructor.getDeclaringClass())) {
+                value = directTextTitleConstructor.newInstance(title);
+                titleReplaced = true;
+            } else if (i == 3 && interfaceClass != null && field.getType().isAssignableFrom(interfaceClass)) {
+                value = getSpotifyPlusIcon(marker);
+                iconReplaced = value != null;
+            }
+            values[i] = value;
+        }
+        if (!markerReplaced || !titleReplaced || !iconReplaced) throw new IllegalStateException("[NewContextMenuHook] Could not replace the marker, title, and icon while cloning " + template.getClass().getName());
+        constructor.setAccessible(true);
+        return constructor.newInstance(values);
     }
 
     private Object findMenuItem(List<?> items, String id) {
@@ -547,9 +545,15 @@ public class NewContextMenuHook extends SpotifyHook {
         if (item == null) return null;
 
         try {
-            Object viewModel = item.getClass().getMethod("getViewModel").invoke(item);
-            Object id = XposedHelpers.getObjectField(viewModel, "a");
-            return id instanceof String ? (String) id : null;
+            Object viewModel = getMenuItemViewModel(item);
+            if (viewModel == null) return null;
+            for (Field field : viewModel.getClass().getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) || field.getType() != String.class) continue;
+                field.setAccessible(true);
+                Object id = field.get(viewModel);
+                if (id instanceof String) return (String) id;
+            }
+            return null;
         } catch (Throwable ignored) {
             return null;
         }
@@ -579,10 +583,9 @@ public class NewContextMenuHook extends SpotifyHook {
         if (addToQueueItem == null) return null;
 
         for (Constructor<?> ctor : addToQueueItem.getClass().getDeclaredConstructors()) {
-            if (ctor.getParameterCount() != 4) continue;
-
             try {
                 Class<?>[] parameterTypes = ctor.getParameterTypes();
+                if (!Arrays.asList(parameterTypes).contains(List.class)) continue;
                 Object[] args = new Object[parameterTypes.length];
                 boolean complete = true;
 
@@ -599,7 +602,7 @@ public class NewContextMenuHook extends SpotifyHook {
                 ctor.setAccessible(true);
                 Object candidate = ctor.newInstance(args);
                 if ("queue_play_next_track".equals(getMenuItemId(candidate))) {
-                    NextUpAction action = createNextUpAction(args[0], candidate);
+                    NextUpAction action = createNextUpAction(args, candidate);
                     if (action != null) {
                         installNextUpClickHook(candidate.getClass());
                         nextUpActions.put(candidate, action);
@@ -613,7 +616,7 @@ public class NewContextMenuHook extends SpotifyHook {
         return null;
     }
 
-    private NextUpAction createNextUpAction(Object queueItemHelper, Object item) {
+    private NextUpAction createNextUpAction(Object[] roots, Object item) {
         try {
             Object value = getField(item, List.class);
             if (!(value instanceof List)) return null;
@@ -621,10 +624,22 @@ public class NewContextMenuHook extends SpotifyHook {
             List<?> tracks = (List<?>) value;
             if (tracks.size() != 1 || tracks.get(0) == null) return null;
 
-            Object queueUseCase = XposedHelpers.getObjectField(queueItemHelper, "a");
-            Object queueApi = XposedHelpers.getObjectField(queueUseCase, "f");
-            Object queueStream = XposedHelpers.getObjectField(queueApi, "c");
-            return new NextUpAction(queueApi, queueStream, tracks.get(0));
+            Class<?> setQueueCommandClass = XposedHelpers.findClass("com.spotify.player.model.command.SetQueueCommand", lpparm.classLoader);
+            Object queueRepository = null;
+            for (Object root : roots) {
+                queueRepository = findQueueRepository(root, setQueueCommandClass, 2, new IdentityHashMap<>());
+                if (queueRepository != null) break;
+            }
+            if (queueRepository == null) throw new IllegalStateException("Could not find a queue repository beneath any context-menu item dependency");
+            Method queueDispatchMethod = findSingleArgumentMethod(queueRepository.getClass(), setQueueCommandClass);
+            Class<?> flowableClass = XposedHelpers.findClass("io.reactivex.rxjava3.core.Flowable", lpparm.classLoader);
+            Object queueStream = getField(queueRepository, flowableClass);
+            if (queueStream == null) throw new IllegalStateException("Could not find the PlayerQueue Flowable in " + queueRepository.getClass().getName());
+            Class<?> singleClass = XposedHelpers.findClass("io.reactivex.rxjava3.core.Single", lpparm.classLoader);
+            List<Method> queueReadMethods = Arrays.stream(queueStream.getClass().getMethods()).filter(method -> !Modifier.isStatic(method.getModifiers()) && method.getParameterCount() == 0 && singleClass.isAssignableFrom(method.getReturnType())).collect(Collectors.toList());
+            if (queueReadMethods.size() != 1) throw new IllegalStateException("Expected one zero-parameter Single method on " + queueStream.getClass().getName() + " but found " + queueReadMethods.size() + ": " + queueReadMethods.stream().map(Method::toString).collect(Collectors.joining(", ")));
+            Method setQueueFactory = Arrays.stream(setQueueCommandClass.getDeclaredMethods()).filter(method -> Modifier.isStatic(method.getModifiers()) && method.getReturnType() == setQueueCommandClass && Arrays.equals(method.getParameterTypes(), new Class<?>[]{String.class, List.class, List.class})).findFirst().orElseThrow(() -> new NoSuchMethodException("No (String, List, List) SetQueueCommand factory"));
+            return new NextUpAction(queueRepository, queueStream, queueDispatchMethod, queueReadMethods.get(0), setQueueFactory, tracks.get(0));
         } catch (Throwable t) {
             XposedBridge.log("[SpotifyPlus] Failed resolving the Next Up queue action: " + t);
             return null;
@@ -635,7 +650,15 @@ public class NewContextMenuHook extends SpotifyHook {
         synchronized (nextUpClickHookClasses) {
             if (nextUpClickHookClasses.contains(itemClass)) return;
 
-            XposedBridge.hookAllMethods(itemClass, "onItemClicked", new XC_MethodHook() {
+            var clickMethodCandidates = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(bridge.getClassData(itemClass))).matcher(MethodMatcher.create().modifiers(Modifier.PUBLIC | Modifier.FINAL).returnType(void.class).paramCount(1)));
+            if (clickMethodCandidates.size() != 1) throw new IllegalStateException("[NewContextMenuHook/DexKit] Expected one public final one-parameter void click method in " + itemClass.getName() + " but found " + clickMethodCandidates.size() + ": " + clickMethodCandidates.stream().map(methodData -> methodData.getDescriptor()).collect(Collectors.joining(", ")));
+            Method clickMethod;
+            try {
+                clickMethod = clickMethodCandidates.get(0).getMethodInstance(lpparm.classLoader);
+            } catch (NoSuchMethodException e) {
+                throw new IllegalStateException("[NewContextMenuHook/DexKit] Could not load the click method from " + itemClass.getName(), e);
+            }
+            XposedBridge.hookMethod(clickMethod, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     NextUpAction action = nextUpActions.get(param.thisObject);
@@ -651,7 +674,7 @@ public class NewContextMenuHook extends SpotifyHook {
 
     private void insertAtTopOfNextUp(NextUpAction action) {
         try {
-            Object queueSingle = XposedHelpers.callMethod(action.queueStream, "A");
+            Object queueSingle = action.queueReadMethod.invoke(action.queueStream);
             Object onQueue = newRxConsumer(queue -> {
                 try {
                     List<?> currentNextTracks = (List<?>) XposedHelpers.callMethod(queue, "nextTracks");
@@ -669,18 +692,8 @@ public class NewContextMenuHook extends SpotifyHook {
                     }
                     nextTracks.add(nextUpStart, nextUpTrack);
 
-                    Class<?> setQueueCommandClass = XposedHelpers.findClass(
-                            "com.spotify.player.model.command.SetQueueCommand",
-                            lpparm.classLoader
-                    );
-                    Object command = XposedHelpers.callStaticMethod(
-                            setQueueCommandClass,
-                            "create",
-                            revision,
-                            nextTracks,
-                            new ArrayList<>(currentPrevTracks)
-                    );
-                    Object updateSingle = invokeSingleArgumentMethod(action.queueApi, command);
+                    Object command = action.setQueueFactory.invoke(null, revision, nextTracks, new ArrayList<>(currentPrevTracks));
+                    Object updateSingle = action.queueDispatchMethod.invoke(action.queueRepository, command);
                     XposedHelpers.callMethod(
                             updateSingle,
                             "subscribe",
@@ -730,19 +743,37 @@ public class NewContextMenuHook extends SpotifyHook {
         }
     }
 
-    private Object invokeSingleArgumentMethod(Object receiver, Object argument) throws Exception {
-        Class<?> type = receiver.getClass();
+    private Object findQueueRepository(Object value, Class<?> commandType, int remainingDepth, IdentityHashMap<Object, Boolean> visited) {
+        if (value == null || remainingDepth < 0 || visited.put(value, Boolean.TRUE) != null) return null;
+        if (findSingleArgumentMethod(value.getClass(), commandType) != null) return value;
+        if (remainingDepth == 0) return null;
+        for (Class<?> type = value.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+            for (Field field : type.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) || field.getType().isPrimitive()) continue;
+                try {
+                    field.setAccessible(true);
+                    Object repository = findQueueRepository(field.get(value), commandType, remainingDepth - 1, visited);
+                    if (repository != null) return repository;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private Method findSingleArgumentMethod(Class<?> receiverClass, Class<?> argumentClass) {
+        Class<?> type = receiverClass;
         while (type != null && type != Object.class) {
             for (Method method : type.getDeclaredMethods()) {
                 Class<?>[] parameterTypes = method.getParameterTypes();
-                if (parameterTypes.length == 1 && parameterTypes[0].isInstance(argument)) {
+                if (!Modifier.isStatic(method.getModifiers()) && parameterTypes.length == 1 && parameterTypes[0] == argumentClass) {
                     method.setAccessible(true);
-                    return method.invoke(receiver, argument);
+                    return method;
                 }
             }
             type = type.getSuperclass();
         }
-        throw new NoSuchMethodException("No queue method accepts " + argument.getClass().getName());
+        return null;
     }
 
     private Object newRxConsumer(java.util.function.Consumer<Object> callback) {
@@ -779,13 +810,19 @@ public class NewContextMenuHook extends SpotifyHook {
     }
 
     private static final class NextUpAction {
-        final Object queueApi;
+        final Object queueRepository;
         final Object queueStream;
+        final Method queueDispatchMethod;
+        final Method queueReadMethod;
+        final Method setQueueFactory;
         final Object track;
 
-        NextUpAction(Object queueApi, Object queueStream, Object track) {
-            this.queueApi = queueApi;
+        NextUpAction(Object queueRepository, Object queueStream, Method queueDispatchMethod, Method queueReadMethod, Method setQueueFactory, Object track) {
+            this.queueRepository = queueRepository;
             this.queueStream = queueStream;
+            this.queueDispatchMethod = queueDispatchMethod;
+            this.queueReadMethod = queueReadMethod;
+            this.setQueueFactory = setQueueFactory;
             this.track = track;
         }
     }

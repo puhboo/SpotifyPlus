@@ -20,7 +20,7 @@ public class SpotifyTrack {
         this.position = position;
         this.color = color;
         this.lastUpdated = lastUpdated;
-        this.imageId = imageId.split(":").length > 0 ? imageId.split(":")[2] : null;
+        this.imageId = imageId.split(":").length == 3 ? imageId.split(":")[2] : "https://i.scdn.co/image/ab67616d0000b27332a7d87248d1b75463483df5";
         this.duration = duration;
         this.saved = saved;
     }

@@ -8,6 +8,15 @@ import android.view.Window;
 import com.lenerd46.spotifyplus.hooks.SleepTimerHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
+import org.luckypray.dexkit.DexKitBridge;
+import org.luckypray.dexkit.query.FindClass;
+import org.luckypray.dexkit.query.FindMethod;
+import org.luckypray.dexkit.query.matchers.ClassMatcher;
+import org.luckypray.dexkit.query.matchers.MethodMatcher;
+import org.luckypray.dexkit.query.matchers.MethodsMatcher;
+
+import java.lang.reflect.Method;
+import java.util.Collections;
 
 public class SpotifyBottomSheet {
     private final ClassLoader classLoader;
@@ -15,14 +24,36 @@ public class SpotifyBottomSheet {
 
     private Object sheet;
 
+    private static Class<?> sheetClass;
+    private static Method draggableMethod;
+
     public SpotifyBottomSheet(ClassLoader classLoader, Context context) {
         this.classLoader = classLoader;
         this.context = context;
     }
 
+    public static void initialize(DexKitBridge bridge, ClassLoader classLoader) {
+        try {
+            sheetClass = bridge.findClass(FindClass.create().matcher(ClassMatcher.create().methods(MethodsMatcher.create()
+                    .add(MethodMatcher.create().name("cancel"))
+                    .add(MethodMatcher.create().name("onAttachedToWindow"))
+                    .add(MethodMatcher.create().name("onCreate"))
+                    .add(MethodMatcher.create().name("onStart"))
+                    .add(MethodMatcher.create().name("setCancelable"))
+                    .add(MethodMatcher.create().name("setCanceledOnTouchOutside"))
+                    .add(MethodMatcher.create().name("setContentView"))
+                    .add(MethodMatcher.create().name("setContentView"))
+            ))).single().getInstance(classLoader);
+
+            draggableMethod = bridge.findMethod(FindMethod.create().searchInClass(Collections.singletonList(bridge.getClassData(sheetClass))).matcher(MethodMatcher.create().returnType("com.google.android.material.bottomsheet.BottomSheetBehavior"))).single().getMethodInstance(classLoader);
+        } catch (Exception e) {
+            XposedBridge.log(e);
+        }
+    }
+
     public void create(View view) {
         int theme = SleepTimerHook.getSpotifyStyle(classLoader, "ModalBottomSheetDialog", 0);
-        sheet = XposedHelpers.newInstance(XposedHelpers.findClass("p.p08", classLoader), context, theme);
+        sheet = XposedHelpers.newInstance(sheetClass, context, theme);
 
         XposedHelpers.callMethod(sheet, "setContentView", view);
         XposedHelpers.callMethod(sheet, "show");
@@ -48,7 +79,7 @@ public class SpotifyBottomSheet {
 
     public void create(View view, boolean show) {
         int theme = SleepTimerHook.getSpotifyStyle(classLoader, "ModalBottomSheetDialog", 0);
-        sheet = XposedHelpers.newInstance(XposedHelpers.findClass("p.p08", classLoader), context, theme);
+        sheet = XposedHelpers.newInstance(sheetClass, context, theme);
 
         XposedHelpers.callMethod(sheet, "setContentView", view);
         if (show) {
@@ -85,8 +116,16 @@ public class SpotifyBottomSheet {
     }
 
     public void setDraggable(boolean draggable) {
-        if (sheet == null) return;
-        Object behavior = XposedHelpers.callMethod(sheet, "g");
-        try { XposedHelpers.callMethod(behavior, "setDraggable", draggable); } catch (Throwable ignored) { try { XposedHelpers.setBooleanField(behavior, "F", draggable); } catch (Throwable throwable) { XposedBridge.log("[SpotifyPlus] Could not change bottom sheet draggable state"); XposedBridge.log(throwable); } }
+        try {
+            if (sheet == null) return;
+            Object behavior = draggableMethod.invoke(sheet);
+
+            try {XposedHelpers.callMethod(behavior, "setDraggable", draggable);} catch (Throwable ignored) {
+                try {XposedHelpers.setBooleanField(behavior, "F", draggable);} catch (Throwable throwable) {
+                    XposedBridge.log("[SpotifyPlus] Could not change bottom sheet draggable state");
+                    XposedBridge.log(throwable);
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 }

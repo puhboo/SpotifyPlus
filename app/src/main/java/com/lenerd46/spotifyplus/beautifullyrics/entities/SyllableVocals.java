@@ -9,6 +9,7 @@ import android.graphics.drawable.Drawable;
 import android.util.TypedValue;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewParent;
 import android.view.animation.OvershootInterpolator;
 import android.widget.LinearLayout;
 import com.google.android.flexbox.FlexboxLayout;
@@ -312,7 +313,9 @@ public class SyllableVocals implements SyncableVocals {
                     }
 
                     if (!secondary) {
-                        ((View)container.getParent().getParent()).animate().scaleX(1.0f).scaleY(1.0f).setDuration(800).setInterpolator(new OvershootInterpolator()).start();
+                        ViewParent parent = container.getParent();
+                        ViewParent grandparent = parent == null ? null : parent.getParent();
+                        if(grandparent instanceof View) ((View) grandparent).animate().scaleX(1.0f).scaleY(1.0f).setDuration(800).setInterpolator(new OvershootInterpolator()).start();
                     }
                 } else {
                     for(var syllable : this.syllables) {

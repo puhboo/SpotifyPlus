@@ -43,7 +43,7 @@ public class XposedLoader implements IXposedHookLoadPackage, IXposedHookZygoteIn
 
     private DexKitBridge bridge;
     private String modulePath = null;
-    private static final String MODULE_VERSION = "0.6.7";
+    private static final String MODULE_VERSION = "0.7";
 
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
@@ -128,9 +128,11 @@ public class XposedLoader implements IXposedHookLoadPackage, IXposedHookZygoteIn
                 Context context = (Context) param.args[0];
                 cleanUpCache(context);
 
+                SpotifyBottomSheet.initialize(bridge, lpparam.classLoader);
                 // new ScriptManager().init(context, lpparam.classLoader);
                 ScriptManager.getInstance().init(context, lpparam.classLoader);
                 new BeautifulLyricsHook().init(lpparam, bridge);
+                new NowPlayingLyricsGradientHook().init(lpparam, bridge);
                 new RemoveCreateButtonHook(context).init(lpparam, bridge);
                 new NetworkHook(context).init(lpparam, bridge);
                 new LastFmHook().init(lpparam, bridge);
@@ -141,7 +143,7 @@ public class XposedLoader implements IXposedHookLoadPackage, IXposedHookZygoteIn
                 new NewContextMenuHook().init(lpparam, bridge);
                 new SleepTimerHook(context).init(lpparam, bridge);
                 new PrivateSessionHook(context).init(lpparam, bridge);
-                new ThemeHook(context).init(lpparam, bridge);
+                new ThemeHook((Application) param.thisObject).init(lpparam, bridge);
                 // new ThemeTest().init(lpparam, bridge);
                 // new LikedSongHook().init(lpparam, bridge);
                 // new KaraokeHook().init(lpparam, bridge);

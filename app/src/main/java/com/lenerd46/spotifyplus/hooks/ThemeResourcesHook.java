@@ -28,35 +28,6 @@ public final class ThemeResourcesHook implements IXposedHookInitPackageResources
     private static volatile int currentOnAccent = 0xFF000000;
     private static final Map<String, Integer> originalColors = new LinkedHashMap<>();
 
-    private static final int BACKGROUND = 0xFF121212;
-    private static final int BACKGROUND_HIGHLIGHT = 0xFF1F1F1F;
-    private static final int BACKGROUND_PRESS = 0xFF000000;
-
-    private static final int SURFACE = 0xFF1F1F1F;
-    private static final int SURFACE_HIGHLIGHT = 0xFF2A2A2A;
-    private static final int SURFACE_PRESS = 0xFF191919;
-
-    private static final int TINTED = 0x1AFFFFFF;
-    private static final int TINTED_HIGHLIGHT = 0x24FFFFFF;
-    private static final int TINTED_PRESS = 0x36FFFFFF;
-
-    private static final int TEXT = 0xFFFFFFFF;
-    private static final int TEXT_SUBDUED = 0xFFB3B3B3;
-
-    private static final int ACCENT = 0xFF1ED760;
-    private static final int ACCENT_HIGHLIGHT = 0xFF3BE477;
-    private static final int ACCENT_PRESS = 0xFF1ABC54;
-
-    private static final int NEGATIVE = 0xFFB4233A;
-    private static final int WARNING = 0xFF9A6700;
-    private static final int POSITIVE = 0xFF087E5B;
-    private static final int ANNOUNCEMENT = 0xFF006FB0;
-
-    private static final int DECORATIVE = 0xFF138CCB;
-    private static final int DECORATIVE_SUBDUED = 0xFFA8D7F2;
-
-    private static final int WHITE = 0xFFFFFFFF;
-
     @Override
     public void handleInitPackageResources(XC_InitPackageResources.InitPackageResourcesParam resparam) {
         if (!SPOTIFY_PACKAGE.equals(resparam.packageName)) {
@@ -109,6 +80,7 @@ public final class ThemeResourcesHook implements IXposedHookInitPackageResources
         replace(resources, "gray_70", textSubdued);
 
         replace(resources, "default_card_background_color", surface);
+        replace(resources, "merch_card_background", surface);
         replace(resources, "sidedrawer_background", surface);
 
         replace(resources, "encore_header_gradient_end", background);
@@ -131,7 +103,8 @@ public final class ThemeResourcesHook implements IXposedHookInitPackageResources
     public static synchronized void setEnabled(boolean value) {
         enabled = value;
         if (spotifyResources == null) return;
-        if (value) applyPalette(currentBackground, currentSurface, currentTinted, currentText, currentTextSubdued, currentAccent, currentOnAccent); else restoreOriginalPalette();
+        if (value) applyPalette(currentBackground, currentSurface, currentTinted, currentText, currentTextSubdued, currentAccent, currentOnAccent);
+        else restoreOriginalPalette();
     }
 
     private static void hookCreativeWorkHeaderLayout(XC_InitPackageResources.InitPackageResourcesParam resparam) {
@@ -179,7 +152,10 @@ public final class ThemeResourcesHook implements IXposedHookInitPackageResources
 
     private static void replace(XResources resources, String name, int color) {
         try {
-            if (!originalColors.containsKey(name)) { int id = resources.getIdentifier(name, "color", SPOTIFY_PACKAGE); if (id != 0) originalColors.put(name, resources.getColor(id, null)); }
+            if (!originalColors.containsKey(name)) {
+                int id = resources.getIdentifier(name, "color", SPOTIFY_PACKAGE);
+                if (id != 0) originalColors.put(name, resources.getColor(id, null));
+            }
             resources.setReplacement(SPOTIFY_PACKAGE, "color", name, color);
         } catch (Throwable ignored) {
         }
@@ -188,11 +164,16 @@ public final class ThemeResourcesHook implements IXposedHookInitPackageResources
     private static void restoreOriginalPalette() {
         XResources resources = spotifyResources;
         if (resources == null) return;
-        for (Map.Entry<String, Integer> color : originalColors.entrySet()) { try { resources.setReplacement(SPOTIFY_PACKAGE, "color", color.getKey(), color.getValue()); } catch (Throwable ignored) { } }
+        for (Map.Entry<String, Integer> color : originalColors.entrySet()) {
+            try {
+                resources.setReplacement(SPOTIFY_PACKAGE, "color", color.getKey(), color.getValue());
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private static int blend(int first, int second, float amount) {
         float inverse = 1.0f - amount;
-        return Color.rgb(Math.round(Color.red(first) * inverse + Color.red(second) * amount), Math.round(Color.green(first) * inverse + Color.green(second) * amount), Math.round(Color.blue(first) * inverse + Color.blue(second) * amount));
+        return Color.argb(Math.round(Color.alpha(first) * inverse + Color.alpha(second) * amount), Math.round(Color.red(first) * inverse + Color.red(second) * amount), Math.round(Color.green(first) * inverse + Color.green(second) * amount), Math.round(Color.blue(first) * inverse + Color.blue(second) * amount));
     }
 }
