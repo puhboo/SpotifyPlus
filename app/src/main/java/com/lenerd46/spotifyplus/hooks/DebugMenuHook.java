@@ -2,46 +2,54 @@ package com.lenerd46.spotifyplus.hooks;
 
 import android.app.Activity;
 import android.content.Intent;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 public class DebugMenuHook extends SpotifyHook {
 
+    private boolean hasLaunched = false;
+
     @Override
     protected void hook() {
         try {
             XposedHelpers.findAndHookMethod(
-                "com.spotify.music.SpotifyMainActivity",
-                lpparam.classLoader,
-                "onResume",
-                new XC_MethodHook() {
-                    private boolean hasLaunched = false;
+                    "com.spotify.music.SpotifyMainActivity",
+                    lpparm.classLoader,
+                    "onResume",
+                    new XC_MethodHook() {
 
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        if (hasLaunched) return;
-                        hasLaunched = true;
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            if (hasLaunched)
+                                return;
 
-                        Activity currentActivity = (Activity) param.thisObject;
-                        XposedBridge.log("[SpotifyPlus] Launching RemoteConfigurationDebugActivity internally...");
+                            hasLaunched = true;
 
-                        try {
-                            Intent intent = new Intent();
-                            intent.setClassName(
-                                "com.spotify.music", 
-                                "com.spotify.remoteconfig.debugfeature.RemoteConfigurationDebugActivity"
-                            );
-                            currentActivity.startActivity(intent);
-                            XposedBridge.log("[SpotifyPlus] Successfully launched debug activity!");
-                        } catch (Throwable e) {
-                            XposedBridge.log("[SpotifyPlus] Failed to start debug activity intent: " + e.getMessage());
+                            Activity activity = (Activity) param.thisObject;
+
+                            XposedBridge.log("[SpotifyPlus] Launching RemoteConfigurationDebugActivity...");
+
+                            try {
+                                Intent intent = new Intent();
+                                intent.setClassName(
+                                        "com.spotify.music",
+                                        "com.spotify.remoteconfig.debugfeature.RemoteConfigurationDebugActivity");
+
+                                activity.startActivity(intent);
+
+                                XposedBridge.log("[SpotifyPlus] Debug activity launched.");
+                            } catch (Throwable e) {
+                                XposedBridge.log("[SpotifyPlus] Failed to launch debug activity:");
+                                XposedBridge.log(e);
+                            }
                         }
-                    }
-                }
-            );
+                    });
+
         } catch (Throwable t) {
-            XposedBridge.log("[SpotifyPlus] Error in DebugMenuHook: " + t.getMessage());
+            XposedBridge.log("[SpotifyPlus] DebugMenuHook error:");
+            XposedBridge.log(t);
         }
     }
 }
