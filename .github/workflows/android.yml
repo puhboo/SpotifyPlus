@@ -20,20 +20,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Decode keystore
-        run: |
-          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 --decode > ${{ github.workspace }}/spotifyplus-release.jks
-
+        
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build signed Release APK
-        env:
-          SIGNING_KEYSTORE_FILE: ${{ github.workspace }}/spotifyplus-release.jks
-          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+      - name: Build apk
         run: ./gradlew assembleRelease
 
       - name: Upload APK artifact
