@@ -5,15 +5,11 @@ import android.content.Intent;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
-public class DebugMenuHook {
+public class DebugMenuHook extends SpotifyHook {
 
-    public static void init(XC_LoadPackage.LoadPackageParam lpparam) {
-        if (!"com.spotify.music".equals(lpparam.packageName)) {
-            return;
-        }
-
+    @Override
+    protected void hook() {
         try {
             XposedHelpers.findAndHookMethod(
                 "com.spotify.music.SpotifyMainActivity",
@@ -31,13 +27,11 @@ public class DebugMenuHook {
                         XposedBridge.log("[SpotifyPlus] Launching RemoteConfigurationDebugActivity internally...");
 
                         try {
-                            // Build an explicit intent using the exact class name found in the Manifest
                             Intent intent = new Intent();
                             intent.setClassName(
                                 "com.spotify.music", 
                                 "com.spotify.remoteconfig.debugfeature.RemoteConfigurationDebugActivity"
                             );
-                            
                             currentActivity.startActivity(intent);
                             XposedBridge.log("[SpotifyPlus] Successfully launched debug activity!");
                         } catch (Throwable e) {
@@ -46,7 +40,6 @@ public class DebugMenuHook {
                     }
                 }
             );
-
         } catch (Throwable t) {
             XposedBridge.log("[SpotifyPlus] Error in DebugMenuHook: " + t.getMessage());
         }
