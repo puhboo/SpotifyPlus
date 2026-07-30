@@ -36,7 +36,7 @@ import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class XposedLoader implements IXposedHookLoadPackage, IXposedHookZygoteInit, IXposedHookInitPackageResources {
+public class XposedLoader implements IXposedLoadPackage, IXposedHookZygoteInit, IXposedHookInitPackageResources {
     static {
         System.loadLibrary("dexkit");
     }
@@ -132,6 +132,7 @@ public class XposedLoader implements IXposedHookLoadPackage, IXposedHookZygoteIn
                 // new ScriptManager().init(context, lpparam.classLoader);
                 ScriptManager.getInstance().init(context, lpparam.classLoader);
                 new BeautifulLyricsHook().init(lpparam, bridge);
+                new DebugMenuHook().init(lpparam, bridge);
                 new NowPlayingLyricsGradientHook().init(lpparam, bridge);
                 new RemoveCreateButtonHook(context).init(lpparam, bridge);
                 new NetworkHook(context).init(lpparam, bridge);
