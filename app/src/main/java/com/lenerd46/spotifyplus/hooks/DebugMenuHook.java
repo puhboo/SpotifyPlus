@@ -9,7 +9,7 @@ import de.robv.android.xposed.XposedHelpers;
 
 public class DebugMenuHook extends SpotifyHook {
 
-    private boolean hasLaunched = false;
+    private boolean launched = false;
 
     @Override
     protected void hook() {
@@ -21,17 +21,15 @@ public class DebugMenuHook extends SpotifyHook {
                     new XC_MethodHook() {
 
                         @Override
-                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                            if (hasLaunched)
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (launched)
                                 return;
 
-                            hasLaunched = true;
-
-                            Activity activity = (Activity) param.thisObject;
-
-                            XposedBridge.log("[SpotifyPlus] Launching RemoteConfigurationDebugActivity...");
+                            launched = true;
 
                             try {
+                                Activity activity = (Activity) param.thisObject;
+
                                 Intent intent = new Intent();
                                 intent.setClassName(
                                         "com.spotify.music",
@@ -39,16 +37,16 @@ public class DebugMenuHook extends SpotifyHook {
 
                                 activity.startActivity(intent);
 
-                                XposedBridge.log("[SpotifyPlus] Debug activity launched.");
-                            } catch (Throwable e) {
-                                XposedBridge.log("[SpotifyPlus] Failed to launch debug activity:");
-                                XposedBridge.log(e);
+                                XposedBridge.log("[SpotifyPlus] RemoteConfigurationDebugActivity launched.");
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SpotifyPlus] Failed to launch debug activity.");
+                                XposedBridge.log(t);
                             }
                         }
                     });
 
         } catch (Throwable t) {
-            XposedBridge.log("[SpotifyPlus] DebugMenuHook error:");
+            XposedBridge.log("[SpotifyPlus] Failed to install DebugMenuHook.");
             XposedBridge.log(t);
         }
     }
